@@ -1,0 +1,8 @@
+node_modules/
+backend-env/
+backend/media/
+backend/whatsapp_session/
+backend/db.sqlite3
+__pycache__/
+*.pyc
+.env
