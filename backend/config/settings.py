@@ -27,7 +27,24 @@ SECRET_KEY = 'django-insecure-pl#&)%1k&ilkw@mo$#uy9895-8%ct_^7=obj6_p^#63^zi*bdw
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = []
+ALLOWED_HOSTS = os.environ.get('ALLOWED_HOSTS', '').split(',') if os.environ.get('ALLOWED_HOSTS') else ['*']
+
+# --- ENCRYPTION KEY ---
+# django-cryptography uses this to encrypt phone numbers and message text.
+# CRITICAL: In production (Render), set this as an environment variable —
+# never hardcode it and never commit it to GitHub. If this key is ever lost,
+# all encrypted data becomes unreadable, so back it up somewhere safe
+# (a password manager, not a text file in this repo).
+#
+# Generate one locally with:
+#   python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+#
+# For local dev only, this falls back to a fixed key so things don't break —
+# but you MUST set a real one via environment variable before deploying.
+CRYPTOGRAPHY_KEY = os.environ.get(
+    'CRYPTOGRAPHY_KEY',
+    'zH8f3sVv0kR5cQ2mB9pT1wL6xY4nJ7eD8uG3aF5oI2s='  # local-dev-only fallback
+).encode()
 
 
 # Application definition
@@ -40,7 +57,9 @@ INSTALLED_APPS = [
     'django.contrib.messages',
     'django.contrib.staticfiles',
     'rest_framework',
+    'rest_framework.authtoken',
     'corsheaders',
+    'django_cryptography',
     'sender',
 ]
 
@@ -103,6 +122,21 @@ AUTH_PASSWORD_VALIDATORS = [
         'NAME': 'django.contrib.auth.password_validation.NumericPasswordValidator',
     },
 ]
+
+
+# --- REST FRAMEWORK AUTH ---
+# Token-based auth: the frontend will store a token per logged-in user
+# and send it with every request, so we know whose campaigns/contacts
+# we're looking at.
+REST_FRAMEWORK = {
+    'DEFAULT_AUTHENTICATION_CLASSES': [
+        'rest_framework.authentication.TokenAuthentication',
+        'rest_framework.authentication.SessionAuthentication',
+    ],
+    'DEFAULT_PERMISSION_CLASSES': [
+        'rest_framework.permissions.IsAuthenticated',
+    ],
+}
 
 
 # Internationalization

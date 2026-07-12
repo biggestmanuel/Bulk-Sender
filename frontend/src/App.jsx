@@ -5,9 +5,15 @@ import ContactList from './components/ContactList'
 import MessageComposer from './components/MessageComposer'
 import SendSettings from './components/SendSettings'
 import SendProgress from './components/SendProgress'
-import { createCampaign, startSending, getCampaignStatus } from './api'
+import QrScanner from './components/QrScanner'
+import Auth from './components/Auth'
+import { createCampaign, startSending, getCampaignStatus, logoutUser } from './api'
 
 function App() {
+  // --- AUTH STATE ---
+  const [authToken, setAuthToken] = useState(localStorage.getItem('authToken'))
+  const [username, setUsername] = useState(localStorage.getItem('username'))
+
   const [csvData, setCsvData] = useState(null)
   const [currentContacts, setCurrentContacts] = useState(null)
   const [mapping, setMapping] = useState(null)
@@ -22,7 +28,23 @@ function App() {
   const [editingMessage, setEditingMessage] = useState(false)
   const [editingSettings, setEditingSettings] = useState(false)
 
+  // Tracks whether we're still waiting on a WhatsApp QR scan before
+  // the actual sending/progress polling should start.
+  const [awaitingQrScan, setAwaitingQrScan] = useState(false)
+  const pendingCampaignIdRef = useRef(null)
+
   const pollIntervalRef = useRef(null)
+
+  function handleAuthSuccess(token, user) {
+    setAuthToken(token)
+    setUsername(user)
+  }
+
+  function handleLogout() {
+    logoutUser()
+    setAuthToken(null)
+    setUsername(null)
+  }
 
   function handleContactsLoaded(data) {
     setCsvData(data)
@@ -57,6 +79,25 @@ function App() {
     setEditingSettings(false)
   }
 
+  function startProgressPolling(campaignId) {
+    pollIntervalRef.current = setInterval(async () => {
+      try {
+        const status = await getCampaignStatus(campaignId)
+        const sent = status.contacts.filter(c => c.status === 'sent').length
+        const failed = status.contacts.filter(c => c.status === 'failed').length
+        setSentCount(sent)
+        setFailedCount(failed)
+
+        if (sent + failed >= status.contacts.length) {
+          clearInterval(pollIntervalRef.current)
+          setSending(false)
+        }
+      } catch (err) {
+        console.error('Polling error:', err)
+      }
+    }, 3000)
+  }
+
   async function handleStartSend() {
     if (settings.mode === 'instant') {
       const confirmed = window.confirm(
@@ -89,22 +130,10 @@ function App() {
 
       await startSending(campaign.id)
 
-      pollIntervalRef.current = setInterval(async () => {
-        try {
-          const status = await getCampaignStatus(campaign.id)
-          const sent = status.contacts.filter(c => c.status === 'sent').length
-          const failed = status.contacts.filter(c => c.status === 'failed').length
-          setSentCount(sent)
-          setFailedCount(failed)
-
-          if (sent + failed >= status.contacts.length) {
-            clearInterval(pollIntervalRef.current)
-            setSending(false)
-          }
-        } catch (err) {
-          console.error('Polling error:', err)
-        }
-      }, 3000)
+      // Instead of polling progress immediately, wait for QR login first.
+      // QrScanner will call handleQrReady() once WhatsApp is logged in.
+      pendingCampaignIdRef.current = campaign.id
+      setAwaitingQrScan(true)
 
     } catch (err) {
       console.error(err)
@@ -113,9 +142,29 @@ function App() {
     }
   }
 
+  function handleQrReady() {
+    setAwaitingQrScan(false)
+    if (pendingCampaignIdRef.current) {
+      startProgressPolling(pendingCampaignIdRef.current)
+    }
+  }
+
+  // --- GATE: show login/register screen if not authenticated ---
+  if (!authToken) {
+    return <Auth onAuthSuccess={handleAuthSuccess} />
+  }
+
   return (
     <div style={{ padding: '40px', fontFamily: 'sans-serif' }}>
-      <h1>WhatsApp Bulk Sender</h1>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <h1>WhatsApp Bulk Sender</h1>
+        <div style={{ fontSize: '14px' }}>
+          Logged in as <strong>{username}</strong>{' '}
+          <button onClick={handleLogout} style={{ marginLeft: '10px' }}>
+            Log Out
+          </button>
+        </div>
+      </div>
 
       <CsvUpload onContactsLoaded={handleContactsLoaded} />
 
@@ -166,6 +215,8 @@ function App() {
       )}
 
       {error && <p style={{ color: 'red' }}>{error}</p>}
+
+      {awaitingQrScan && <QrScanner onReady={handleQrReady} />}
 
       {(sending || sentCount > 0 || failedCount > 0) && (
         <SendProgress total={currentContacts.length} sent={sentCount} failed={failedCount} />

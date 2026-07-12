@@ -1,10 +1,15 @@
+import os
 import threading
+from django.conf import settings as django_settings
 from .whatsapp_automation import send_whatsapp_messages
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from rest_framework import status
 from .models import Campaign, Contact, MediaFile
 from .serializers import CampaignSerializer
+
+QR_PATH = os.path.join(django_settings.MEDIA_ROOT, 'qr_code.png')
+QR_SLOW_FLAG_PATH = os.path.join(django_settings.MEDIA_ROOT, 'qr_slow.flag')
 
 
 @api_view(['POST'])
@@ -58,10 +63,39 @@ def get_campaign_status(request, campaign_id):
     serializer = CampaignSerializer(campaign)
     return Response(serializer.data)
 
+
+@api_view(['GET'])
+def get_qr_status(request):
+    """
+    Frontend polls this while a campaign is starting up, to know whether
+    a WhatsApp login QR code is currently available to scan, and whether
+    the wait has been going on long enough to warn about a slow network.
+    """
+    qr_ready = os.path.exists(QR_PATH)
+    qr_slow = os.path.exists(QR_SLOW_FLAG_PATH)
+
+    response = {'qr_ready': qr_ready, 'qr_slow': qr_slow}
+    if qr_ready:
+        response['qr_url'] = '/media/qr_code.png'
+
+    return Response(response)
+
+
+def _mark_qr_slow():
+    """Called from the automation script if login is taking a long time."""
+    os.makedirs(os.path.dirname(QR_SLOW_FLAG_PATH), exist_ok=True)
+    with open(QR_SLOW_FLAG_PATH, 'w') as f:
+        f.write('slow')
+
+
 def run_campaign_send(campaign_id):
     """
     This runs in a background thread — pulls campaign data and starts sending.
     """
+    # Clear any leftover slow-network flag from a previous run
+    if os.path.exists(QR_SLOW_FLAG_PATH):
+        os.remove(QR_SLOW_FLAG_PATH)
+
     try:
         campaign = Campaign.objects.get(id=campaign_id)
     except Campaign.DoesNotExist:
@@ -79,8 +113,13 @@ def run_campaign_send(campaign_id):
         message_text=campaign.message_text,
         media_paths=media_paths,
         delay_seconds=delay,
-        on_progress=update_status
+        on_progress=update_status,
+        on_qr_slow=_mark_qr_slow
     )
+
+    # Clean up the slow flag once sending has finished/aborted
+    if os.path.exists(QR_SLOW_FLAG_PATH):
+        os.remove(QR_SLOW_FLAG_PATH)
 
 
 @api_view(['POST'])
