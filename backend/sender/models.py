@@ -1,8 +1,17 @@
 from django.db import models
+from django.contrib.auth.models import User
+from django_cryptography.fields import encrypt
+
 
 class Campaign(models.Model):
+    # Every campaign now belongs to a specific user — this is what makes
+    # per-user isolation possible. null=True/blank=True temporarily so
+    # existing local test data doesn't break; tighten this once real
+    # accounts are in use everywhere.
+    owner = models.ForeignKey(User, on_delete=models.CASCADE, related_name='campaigns', null=True, blank=True)
+
     name = models.CharField(max_length=255)
-    message_text = models.TextField()
+    message_text = encrypt(models.TextField())
     send_mode = models.CharField(
         max_length=10,
         choices=[('delay', 'Delay'), ('instant', 'Instant')],
@@ -17,7 +26,7 @@ class Campaign(models.Model):
 class Contact(models.Model):
     campaign = models.ForeignKey(Campaign, on_delete=models.CASCADE, related_name='contacts')
     name = models.CharField(max_length=255)
-    phone = models.CharField(max_length=20)
+    phone = encrypt(models.CharField(max_length=20))
     status = models.CharField(
         max_length=10,
         choices=[('pending', 'Pending'), ('sent', 'Sent'), ('failed', 'Failed')],
