@@ -108,7 +108,10 @@ def create_campaign(request):
         phone = str(contact.get('phone', '')).strip()
         cleaned = re.sub(r'[\s\-()]', '', phone)
         if PHONE_RE.match(cleaned):
-            valid_contacts.append(contact)
+            # Store the cleaned form, not the raw input — otherwise a number
+            # like "+234 701 231 9410" passes validation against `cleaned`
+            # but gets saved with the spaces still in it.
+            valid_contacts.append({'name': contact.get('name', ''), 'phone': cleaned})
 
     if not valid_contacts:
         return Response(
@@ -126,8 +129,8 @@ def create_campaign(request):
     for contact in valid_contacts:
         Contact.objects.create(
             campaign=campaign,
-            name=contact.get('name', ''),
-            phone=contact.get('phone', '')
+            name=contact['name'],
+            phone=contact['phone']
         )
 
     files = request.FILES.getlist('media_files')
