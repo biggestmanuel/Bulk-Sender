@@ -4,11 +4,10 @@ from .encryption import EncryptedCharField, EncryptedTextField
 
 
 class Campaign(models.Model):
-    # Every campaign now belongs to a specific user — this is what makes
-    # per-user isolation possible. null=True/blank=True temporarily so
-    # existing local test data doesn't break; tighten this once real
-    # accounts are in use everywhere.
-    owner = models.ForeignKey(User, on_delete=models.CASCADE, related_name='campaigns', null=True, blank=True)
+    # Every campaign belongs to a specific user. This used to be
+    # null=True/blank=True to avoid breaking pre-auth test data — that
+    # transition is done now (see migration 0003), so this is required.
+    owner = models.ForeignKey(User, on_delete=models.CASCADE, related_name='campaigns')
 
     name = models.CharField(max_length=255)
     message_text = EncryptedTextField()

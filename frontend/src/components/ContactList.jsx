@@ -1,10 +1,5 @@
 import { useState, useEffect } from 'react'
-
-function isValidPhone(phone) {
-  const cleaned = phone.replace(/[\s\-()]/g, '')
-  const regex = /^\+?[0-9]{10,15}$/
-  return regex.test(cleaned)
-}
+import { isValidPhone } from '../utils/phone'
 
 function ContactList({ headers, dataRows, mapping, onContactsUpdated }) {
   const nameIndex = headers.indexOf(mapping.nameCol)

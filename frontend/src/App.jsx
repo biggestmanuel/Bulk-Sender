@@ -7,6 +7,7 @@ import SendSettings from './components/SendSettings'
 import SendProgress from './components/SendProgress'
 import QrScanner from './components/QrScanner'
 import Auth from './components/Auth'
+import { isValidPhone } from './utils/phone'
 import { createCampaign, startSending, getCampaignStatus, logoutUser } from './api'
 
 function App() {
@@ -99,6 +100,22 @@ function App() {
   }
 
   async function handleStartSend() {
+    const nameIndex = csvData.headers.indexOf(mapping.nameCol)
+    const phoneIndex = csvData.headers.indexOf(mapping.phoneCol)
+
+    // Refuse to submit while any contact still has an invalid phone number,
+    // instead of quietly sending a smaller campaign than the UI showed.
+    // The backend re-validates too, but the user should decide what to do
+    // with invalid rows (fix or remove them) rather than have them vanish.
+    const invalidContacts = currentContacts.filter(row => !isValidPhone(row[phoneIndex]))
+    if (invalidContacts.length > 0) {
+      setError(
+        `${invalidContacts.length} contact(s) have an invalid phone number. ` +
+        `Remove or fix them in the contact list above before sending.`
+      )
+      return
+    }
+
     if (settings.mode === 'instant') {
       const confirmed = window.confirm(
         '⚠️ You chose "Send all at once". This carries a real risk of the WhatsApp number getting banned. Are you sure you want to continue?'
@@ -112,9 +129,6 @@ function App() {
     setFailedCount(0)
 
     try {
-      const nameIndex = csvData.headers.indexOf(mapping.nameCol)
-      const phoneIndex = csvData.headers.indexOf(mapping.phoneCol)
-
       const contactsPayload = currentContacts.map(row => ({
         name: row[nameIndex],
         phone: row[phoneIndex],
