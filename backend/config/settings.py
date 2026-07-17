@@ -15,6 +15,8 @@ from pathlib import Path
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 import os
+from django.core.exceptions import ImproperlyConfigured
+
 os.environ.setdefault('DJANGO_ALLOW_ASYNC_UNSAFE', 'true')
 
 
@@ -25,13 +27,15 @@ os.environ.setdefault('DJANGO_ALLOW_ASYNC_UNSAFE', 'true')
 SECRET_KEY = 'django-insecure-pl#&)%1k&ilkw@mo$#uy9895-8%ct_^7=obj6_p^#63^zi*bdw'
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+# Now reads from the DEBUG env var so a real deployment (Render, etc.) can
+# explicitly set DEBUG=False instead of relying on this file's default.
+DEBUG = os.environ.get('DEBUG', 'True') == 'True'
 
 ALLOWED_HOSTS = os.environ.get('ALLOWED_HOSTS', '').split(',') if os.environ.get('ALLOWED_HOSTS') else ['*']
 
 # --- ENCRYPTION KEY ---
-# django-cryptography uses this to encrypt phone numbers and message text.
-# CRITICAL: In production (Render), set this as an environment variable —
+# Used to encrypt phone numbers and message text at rest (see sender/encryption.py).
+# CRITICAL: In production, set this as a real environment variable —
 # never hardcode it and never commit it to GitHub. If this key is ever lost,
 # all encrypted data becomes unreadable, so back it up somewhere safe
 # (a password manager, not a text file in this repo).
@@ -39,12 +43,20 @@ ALLOWED_HOSTS = os.environ.get('ALLOWED_HOSTS', '').split(',') if os.environ.get
 # Generate one locally with:
 #   python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
 #
-# For local dev only, this falls back to a fixed key so things don't break —
-# but you MUST set a real one via environment variable before deploying.
-CRYPTOGRAPHY_KEY = os.environ.get(
-    'CRYPTOGRAPHY_KEY',
-    'zH8f3sVv0kR5cQ2mB9pT1wL6xY4nJ7eD8uG3aF5oI2s='  # local-dev-only fallback
-).encode()
+# In DEBUG mode only, this falls back to a fixed local key so dev doesn't
+# break. In production (DEBUG=False) the app now refuses to start without
+# a real key set, instead of silently falling back to the committed one.
+CRYPTOGRAPHY_KEY = os.environ.get('CRYPTOGRAPHY_KEY')
+if not CRYPTOGRAPHY_KEY:
+    if DEBUG:
+        CRYPTOGRAPHY_KEY = 'zH8f3sVv0kR5cQ2mB9pT1wL6xY4nJ7eD8uG3aF5oI2s='  # local-dev-only fallback
+    else:
+        raise ImproperlyConfigured(
+            "CRYPTOGRAPHY_KEY environment variable must be set when DEBUG=False. "
+            "Generate one with: "
+            "python -c \"from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())\""
+        )
+CRYPTOGRAPHY_KEY = CRYPTOGRAPHY_KEY.encode()
 
 
 # Application definition
@@ -155,9 +167,11 @@ USE_TZ = True
 
 STATIC_URL = 'static/'
 
-CORS_ALLOWED_ORIGINS = [
-    "http://localhost:5173",
-]
+# Now reads from CORS_ALLOWED_ORIGINS env var (comma-separated) so a
+# production frontend origin can be added without editing this file.
+CORS_ALLOWED_ORIGINS = os.environ.get(
+    'CORS_ALLOWED_ORIGINS', 'http://localhost:5173'
+).split(',')
 
 MEDIA_URL = '/media/'
 MEDIA_ROOT = BASE_DIR / 'media'

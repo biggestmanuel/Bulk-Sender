@@ -1,4 +1,5 @@
 import os
+import re
 import threading
 from django.conf import settings as django_settings
 from django.contrib.auth.models import User
@@ -12,8 +13,17 @@ from rest_framework import status
 from .models import Campaign, Contact, MediaFile
 from .serializers import CampaignSerializer
 
-QR_PATH = os.path.join(django_settings.MEDIA_ROOT, 'qr_code.png')
-QR_SLOW_FLAG_PATH = os.path.join(django_settings.MEDIA_ROOT, 'qr_slow.flag')
+PHONE_RE = re.compile(r'^\+?[0-9]{10,15}$')
+MAX_CONTACTS_PER_CAMPAIGN = 5000
+
+
+def _qr_path(user_id):
+    """Per-user QR screenshot path — keeps two users' logins from colliding."""
+    return os.path.join(django_settings.MEDIA_ROOT, f'qr_code_{user_id}.png')
+
+
+def _qr_slow_flag_path(user_id):
+    return os.path.join(django_settings.MEDIA_ROOT, f'qr_slow_{user_id}.flag')
 
 
 # --- AUTH ---
@@ -68,6 +78,10 @@ def create_campaign(request):
     Creates a new campaign with contacts and optional media files,
     owned by whichever user is making the request.
     Expects: name, message_text, send_mode, contacts (list of {name, phone}), media files
+
+    Now validates on the server too (not just in the UI): caps the number
+    of contacts per campaign, and drops any contact whose phone number
+    doesn't look valid rather than trusting the payload blindly.
     """
     name = request.data.get('name', 'Untitled Campaign')
     message_text = request.data.get('message_text', '')
@@ -80,6 +94,28 @@ def create_campaign(request):
     except json.JSONDecodeError:
         return Response({'error': 'Invalid contacts format'}, status=status.HTTP_400_BAD_REQUEST)
 
+    if not isinstance(contacts_list, list) or len(contacts_list) == 0:
+        return Response({'error': 'At least one contact is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+    if len(contacts_list) > MAX_CONTACTS_PER_CAMPAIGN:
+        return Response(
+            {'error': f'Too many contacts — max {MAX_CONTACTS_PER_CAMPAIGN} per campaign'},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+    valid_contacts = []
+    for contact in contacts_list:
+        phone = str(contact.get('phone', '')).strip()
+        cleaned = re.sub(r'[\s\-()]', '', phone)
+        if PHONE_RE.match(cleaned):
+            valid_contacts.append(contact)
+
+    if not valid_contacts:
+        return Response(
+            {'error': 'None of the contacts had a valid phone number'},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
     campaign = Campaign.objects.create(
         owner=request.user,
         name=name,
@@ -87,7 +123,7 @@ def create_campaign(request):
         send_mode=send_mode
     )
 
-    for contact in contacts_list:
+    for contact in valid_contacts:
         Contact.objects.create(
             campaign=campaign,
             name=contact.get('name', ''),
@@ -124,35 +160,45 @@ def get_qr_status(request):
     a WhatsApp login QR code is currently available to scan, and whether
     the wait has been going on long enough to warn about a slow network.
 
-    NOTE: QR/session state is still global at this stage (Stage 1 of 3).
-    Stage 3 will make this per-user so multiple people don't collide.
+    QR/session state is now per-user (keyed off request.user.id), so two
+    people starting a send around the same time no longer see or
+    overwrite each other's QR code or WhatsApp session.
     """
-    qr_ready = os.path.exists(QR_PATH)
-    qr_slow = os.path.exists(QR_SLOW_FLAG_PATH)
+    user_id = request.user.id
+    qr_ready = os.path.exists(_qr_path(user_id))
+    qr_slow = os.path.exists(_qr_slow_flag_path(user_id))
 
     response = {'qr_ready': qr_ready, 'qr_slow': qr_slow}
     if qr_ready:
-        response['qr_url'] = '/media/qr_code.png'
+        response['qr_url'] = f'/media/qr_code_{user_id}.png'
 
     return Response(response)
 
 
-def _mark_qr_slow():
+def _mark_qr_slow(user_id):
     """Called from the automation script if login is taking a long time."""
-    os.makedirs(os.path.dirname(QR_SLOW_FLAG_PATH), exist_ok=True)
-    with open(QR_SLOW_FLAG_PATH, 'w') as f:
+    path = _qr_slow_flag_path(user_id)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, 'w') as f:
         f.write('slow')
 
 
-def run_campaign_send(campaign_id):
+def run_campaign_send(campaign_id, user_id):
     """
     This runs in a background thread — pulls campaign data and starts sending.
+
+    Takes user_id explicitly (passed in by start_sending, which already
+    verified ownership) rather than trusting campaign_id alone. The lookup
+    below re-checks owner_id so a campaign can never be sent using the
+    wrong user's WhatsApp session, even if this function is ever called
+    from somewhere else in the future.
     """
-    if os.path.exists(QR_SLOW_FLAG_PATH):
-        os.remove(QR_SLOW_FLAG_PATH)
+    slow_flag = _qr_slow_flag_path(user_id)
+    if os.path.exists(slow_flag):
+        os.remove(slow_flag)
 
     try:
-        campaign = Campaign.objects.get(id=campaign_id)
+        campaign = Campaign.objects.get(id=campaign_id, owner_id=user_id)
     except Campaign.DoesNotExist:
         return
 
@@ -160,20 +206,21 @@ def run_campaign_send(campaign_id):
     media_paths = [m.file.path for m in campaign.media_files.all()]
     delay = 3 if campaign.send_mode == 'delay' else 1
 
-    def update_status(contact_id, status):
-        Contact.objects.filter(id=contact_id).update(status=status)
+    def update_status(contact_id, contact_status):
+        Contact.objects.filter(id=contact_id).update(status=contact_status)
 
     send_whatsapp_messages(
         contacts=contacts,
         message_text=campaign.message_text,
+        user_id=user_id,
         media_paths=media_paths,
         delay_seconds=delay,
         on_progress=update_status,
-        on_qr_slow=_mark_qr_slow
+        on_qr_slow=lambda: _mark_qr_slow(user_id)
     )
 
-    if os.path.exists(QR_SLOW_FLAG_PATH):
-        os.remove(QR_SLOW_FLAG_PATH)
+    if os.path.exists(slow_flag):
+        os.remove(slow_flag)
 
 
 @api_view(['POST'])
@@ -187,7 +234,7 @@ def start_sending(request, campaign_id):
     except Campaign.DoesNotExist:
         return Response({'error': 'Campaign not found'}, status=status.HTTP_404_NOT_FOUND)
 
-    thread = threading.Thread(target=run_campaign_send, args=(campaign_id,))
+    thread = threading.Thread(target=run_campaign_send, args=(campaign_id, request.user.id))
     thread.start()
 
     return Response({'message': 'Sending started', 'campaign_id': campaign_id})

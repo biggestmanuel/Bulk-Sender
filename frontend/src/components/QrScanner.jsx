@@ -4,6 +4,11 @@ import { useState, useEffect } from 'react'
 // Polls the backend every 2 seconds to check whether a QR is ready,
 // shows a "slow network" warning if it's taking a long time,
 // and calls onReady() once WhatsApp has logged in (QR disappears).
+//
+// NOTE: now sends the auth token with every poll. QR state is per-user on
+// the backend, so without the token the server wouldn't know whose QR to
+// return — this is what makes it safe for two people to start a send at
+// the same time without seeing or overwriting each other's QR code.
 function QrScanner({ onReady }) {
   const [qrUrl, setQrUrl] = useState(null)
   const [everSawQr, setEverSawQr] = useState(false)
@@ -12,7 +17,10 @@ function QrScanner({ onReady }) {
   useEffect(() => {
     const interval = setInterval(async () => {
       try {
-        const res = await fetch('http://127.0.0.1:8000/api/qr-status/')
+        const token = localStorage.getItem('authToken')
+        const res = await fetch('http://127.0.0.1:8000/api/qr-status/', {
+          headers: token ? { Authorization: `Token ${token}` } : {},
+        })
         const data = await res.json()
 
         if (data.qr_ready) {

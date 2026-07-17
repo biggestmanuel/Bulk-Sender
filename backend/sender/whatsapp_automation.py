@@ -1,15 +1,10 @@
 import time
 import os
-import re
 import urllib.parse
-from datetime import datetime
 from playwright.sync_api import sync_playwright
 
-# Saves the QR screenshot into backend/media/qr_code.png
-QR_PATH = os.path.join(os.path.dirname(__file__), '..', 'media', 'qr_code.png')
-
-# Failure screenshots go into backend/media/failures/
-FAILURES_DIR = os.path.join(os.path.dirname(__file__), '..', 'media', 'failures')
+SESSIONS_DIR = os.path.join(os.path.dirname(__file__), '..', 'whatsapp_session')
+MEDIA_DIR = os.path.join(os.path.dirname(__file__), '..', 'media')
 
 # NOTE: these are ceilings, not fixed waits. wait_for_selector returns the
 # instant the chat list appears — a fast scan still moves on in seconds.
@@ -18,38 +13,30 @@ QR_SLOW_WARNING_MS = 300000   # 5 min — if still not logged in, flag "slow net
 QR_TOTAL_TIMEOUT_MS = 600000  # 10 min — real ceiling before giving up entirely
 
 
-def _safe_filename_part(text):
-    """Strips anything that isn't safe for a filename (keeps letters, numbers, - and _)."""
-    return re.sub(r'[^a-zA-Z0-9_-]', '', text.replace(' ', '_'))
-
-
-def _save_failure_screenshot(page, contact):
+def get_session_dir(user_id):
     """
-    Takes a screenshot of the current page state when a send fails,
-    so you can see what WhatsApp Web actually looked like at that moment
-    instead of debugging blind from print() logs alone.
+    Each user gets their own persistent browser profile directory, so
+    logins and in-progress QR scans never collide between two people
+    sending campaigns at the same time.
     """
-    try:
-        os.makedirs(FAILURES_DIR, exist_ok=True)
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        name_part = _safe_filename_part(contact.get('name', 'unknown'))
-        phone_part = _safe_filename_part(contact.get('phone', 'unknown'))
-        filename = f"failure_{name_part}_{phone_part}_{timestamp}.png"
-        filepath = os.path.join(FAILURES_DIR, filename)
-        page.screenshot(path=filepath)
-        print(f"Saved failure screenshot: {filename}")
-        return filename
-    except Exception as screenshot_err:
-        print(f"Could not save failure screenshot: {screenshot_err}")
-        return None
+    return os.path.join(SESSIONS_DIR, f'user_{user_id}')
 
 
-def send_whatsapp_messages(contacts, message_text, media_paths=None, delay_seconds=20, on_progress=None, on_qr_slow=None):
+def get_qr_path(user_id):
+    """Per-user QR screenshot path, so the frontend never shows one user's
+    QR code to another user polling at the same time."""
+    return os.path.join(MEDIA_DIR, f'qr_code_{user_id}.png')
+
+
+def send_whatsapp_messages(contacts, message_text, user_id, media_paths=None,
+                            delay_seconds=20, on_progress=None, on_qr_slow=None):
     media_paths = media_paths or []
+    qr_path = get_qr_path(user_id)
+    session_dir = get_session_dir(user_id)
 
     with sync_playwright() as p:
         browser = p.chromium.launch_persistent_context(
-            user_data_dir="whatsapp_session",
+            user_data_dir=session_dir,
             headless=True
         )
         page = browser.new_page()
@@ -58,11 +45,11 @@ def send_whatsapp_messages(contacts, message_text, media_paths=None, delay_secon
         # If a QR code shows up (first login / expired session), screenshot it
         try:
             qr_canvas = page.wait_for_selector('canvas', timeout=15000)
-            os.makedirs(os.path.dirname(QR_PATH), exist_ok=True)
-            qr_canvas.screenshot(path=QR_PATH)
-            print("QR code screenshot saved — waiting for it to be scanned.")
+            os.makedirs(os.path.dirname(qr_path), exist_ok=True)
+            qr_canvas.screenshot(path=qr_path)
+            print(f"QR code screenshot saved for user {user_id} — waiting for it to be scanned.")
         except Exception:
-            print("No QR canvas found — likely already logged in from a saved session.")
+            print(f"No QR canvas found for user {user_id} — likely already logged in from a saved session.")
 
         # STAGE 1: wait up to 5 minutes for login. Returns immediately on success —
         # this is NOT a fixed 5-minute delay, just the max wait before we warn.
@@ -90,8 +77,8 @@ def send_whatsapp_messages(contacts, message_text, media_paths=None, delay_secon
                 return
 
         # Logged in — remove the QR screenshot so the frontend knows to stop showing it
-        if os.path.exists(QR_PATH):
-            os.remove(QR_PATH)
+        if os.path.exists(qr_path):
+            os.remove(qr_path)
 
         # Dismiss the "Welcome to WhatsApp Web" popup if it shows up
         try:
@@ -111,19 +98,14 @@ def send_whatsapp_messages(contacts, message_text, media_paths=None, delay_secon
                 page.wait_for_selector('[data-testid="wds-ic-send-filled"]', timeout=90000)
 
                 if media_paths:
-                    print(f"Attempting to attach {len(media_paths)} media file(s): {media_paths}")
                     page.click('[data-testid="plus-rounded"]', timeout=10000)
-                    print("Clicked + button")
 
                     with page.expect_file_chooser() as fc_info:
                         page.click('text=Photos & videos', timeout=3000, force=True)
-                    print("Clicked Photos & videos, file chooser intercepted")
                     file_chooser = fc_info.value
                     file_chooser.set_files(media_paths)
-                    print("Files set into chooser")
 
                     page.wait_for_timeout(5000)
-                    print("Waited after setting files")
 
                 page.click('[data-testid="wds-ic-send-filled"]:visible', timeout=10000, force=True)
                 if on_progress:
@@ -131,7 +113,6 @@ def send_whatsapp_messages(contacts, message_text, media_paths=None, delay_secon
 
             except Exception as e:
                 print(f"Failed to send to {contact['name']} ({contact['phone']}): {e}")
-                _save_failure_screenshot(page, contact)
                 if on_progress:
                     on_progress(contact['id'], 'failed')
 
