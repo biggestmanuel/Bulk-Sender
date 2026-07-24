@@ -14,7 +14,7 @@ function Auth({ onAuthSuccess }) {
     setError('')
 
     if (!username.trim() || !password.trim()) {
-      setError('Please fill in both username and password')
+      setError('Enter both a username and password.')
       return
     }
 
@@ -30,73 +30,119 @@ function Auth({ onAuthSuccess }) {
 
       onAuthSuccess(data.token, data.username)
     } catch (err) {
-      setError(err.message || 'Something went wrong. Please try again.')
+      setError(err.message || 'Something went wrong. Try again.')
     } finally {
       setLoading(false)
     }
   }
 
   return (
-    <div style={{ maxWidth: '360px', margin: '80px auto', padding: '30px', border: '1px solid lightgray', borderRadius: '8px' }}>
-      <h2 style={{ textAlign: 'center' }}>
-        {mode === 'login' ? 'Log In' : 'Create an Account'}
-      </h2>
-
-      <form onSubmit={handleSubmit}>
-        <div style={{ marginBottom: '12px' }}>
-          <label style={{ display: 'block', marginBottom: '4px' }}>Username</label>
-          <input
-            type="text"
-            value={username}
-            onChange={(e) => setUsername(e.target.value)}
-            style={{ width: '100%', padding: '8px', boxSizing: 'border-box' }}
-          />
+    <div style={{
+      minHeight: '100vh',
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      padding: 'var(--space-lg)',
+    }}>
+      <div className="bs-card" style={{ width: '380px' }}>
+        <div style={{ marginBottom: 'var(--space-lg)' }}>
+          <div className="bs-pace" style={{ marginBottom: 'var(--space-md)' }} aria-hidden="true">
+            <span className="bs-pace-tick is-done" />
+            <span className="bs-pace-tick is-done" />
+            <span className="bs-pace-tick" />
+          </div>
+          <h1>{mode === 'login' ? 'Log in' : 'Create your account'}</h1>
+          <p>
+            {mode === 'login'
+              ? 'Send at your own pace.'
+              : 'Set up an account to start sending.'}
+          </p>
         </div>
 
-        {mode === 'register' && (
-          <div style={{ marginBottom: '12px' }}>
-            <label style={{ display: 'block', marginBottom: '4px' }}>Email (optional)</label>
+        <form onSubmit={handleSubmit}>
+          <div style={{ marginBottom: 'var(--space-md)' }}>
+            <label className="bs-label" htmlFor="username">Username</label>
             <input
-              type="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              style={{ width: '100%', padding: '8px', boxSizing: 'border-box' }}
+              id="username"
+              className="bs-input"
+              type="text"
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
+              placeholder="yourname"
+              autoComplete="username"
             />
           </div>
-        )}
 
-        <div style={{ marginBottom: '16px' }}>
-          <label style={{ display: 'block', marginBottom: '4px' }}>Password</label>
-          <input
-            type="password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            style={{ width: '100%', padding: '8px', boxSizing: 'border-box' }}
-          />
-        </div>
+          {mode === 'register' && (
+            <div style={{ marginBottom: 'var(--space-md)' }}>
+              <label className="bs-label" htmlFor="email">Email (optional)</label>
+              <input
+                id="email"
+                className="bs-input"
+                type="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                placeholder="name@company.com"
+                autoComplete="email"
+              />
+            </div>
+          )}
 
-        {error && <p style={{ color: 'red', fontSize: '14px' }}>{error}</p>}
+          <div style={{ marginBottom: 'var(--space-lg)' }}>
+            <label className="bs-label" htmlFor="password">Password</label>
+            <input
+              id="password"
+              className="bs-input"
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              placeholder="••••••••"
+              autoComplete={mode === 'login' ? 'current-password' : 'new-password'}
+            />
+          </div>
 
-        <button type="submit" disabled={loading} style={{ width: '100%', padding: '10px', marginBottom: '10px' }}>
-          {loading ? 'Please wait...' : (mode === 'login' ? 'Log In' : 'Create Account')}
-        </button>
-      </form>
+          {error && (
+            <p style={{
+              color: 'var(--danger)',
+              fontSize: '13px',
+              marginBottom: 'var(--space-md)',
+            }}>
+              {error}
+            </p>
+          )}
 
-      <p style={{ textAlign: 'center', fontSize: '14px' }}>
-        {mode === 'login' ? (
-          <>Don't have an account?{' '}
-            <button onClick={() => setMode('register')} style={{ border: 'none', background: 'none', color: 'blue', cursor: 'pointer', textDecoration: 'underline' }}>
-              Sign up
-            </button>
-          </>
-        ) : (
-          <>Already have an account?{' '}
-            <button onClick={() => setMode('login')} style={{ border: 'none', background: 'none', color: 'blue', cursor: 'pointer', textDecoration: 'underline' }}>
-              Log in
-            </button>
-          </>
-        )}
-      </p>
+          <button
+            type="submit"
+            disabled={loading}
+            className="bs-btn bs-btn-primary"
+            style={{ width: '100%', marginBottom: 'var(--space-md)' }}
+          >
+            {loading ? 'Just a moment…' : (mode === 'login' ? 'Log in' : 'Create account')}
+          </button>
+        </form>
+
+        <p style={{ textAlign: 'center', fontSize: '13px' }}>
+          {mode === 'login' ? (
+            <>Don't have an account?{' '}
+              <button
+                onClick={() => setMode('register')}
+                style={{ border: 'none', background: 'none', color: 'var(--accent)', cursor: 'pointer', fontWeight: 500, padding: 0, fontSize: '13px' }}
+              >
+                Sign up
+              </button>
+            </>
+          ) : (
+            <>Already have an account?{' '}
+              <button
+                onClick={() => setMode('login')}
+                style={{ border: 'none', background: 'none', color: 'var(--accent)', cursor: 'pointer', fontWeight: 500, padding: 0, fontSize: '13px' }}
+              >
+                Log in
+              </button>
+            </>
+          )}
+        </p>
+      </div>
     </div>
   )
 }

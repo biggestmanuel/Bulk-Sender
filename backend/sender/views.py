@@ -108,10 +108,12 @@ def create_campaign(request):
         phone = str(contact.get('phone', '')).strip()
         cleaned = re.sub(r'[\s\-()]', '', phone)
         if PHONE_RE.match(cleaned):
-            # Store the cleaned form, not the raw input — otherwise a number
-            # like "+234 701 231 9410" passes validation against `cleaned`
-            # but gets saved with the spaces still in it.
-            valid_contacts.append({'name': contact.get('name', ''), 'phone': cleaned})
+            # Store the cleaned version, not the raw input — this is what
+            # gets matched against later and what whatsapp_automation.py
+            # expects (it does its own light stripping of '+'/' ' but
+            # shouldn't have to also handle dashes/parens/etc left over
+            # from a messy CSV).
+            valid_contacts.append({**contact, 'phone': cleaned})
 
     if not valid_contacts:
         return Response(
@@ -129,8 +131,8 @@ def create_campaign(request):
     for contact in valid_contacts:
         Contact.objects.create(
             campaign=campaign,
-            name=contact['name'],
-            phone=contact['phone']
+            name=contact.get('name', ''),
+            phone=contact.get('phone', '')
         )
 
     files = request.FILES.getlist('media_files')
