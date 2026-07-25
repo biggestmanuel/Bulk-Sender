@@ -10,6 +10,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "libphonenumber-js": "^1.13.9",
     "papaparse": "^5.5.4",
     "react": "^19.2.6",
     "react-dom": "^19.2.6"

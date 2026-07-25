@@ -1,0 +1,21 @@
+Name,Phone
+Format 01 Plain digits no plus,2348161234765
+Format 02 Plus plain digits,+2348161234765
+Format 03 Plus spaces,+234 816 123 4765
+Format 04 Plain digits spaces no plus,234 816 123 4765
+Format 05 Plus dashes,+234-816-1234765
+Format 06 Plain digits dashes no plus,234-816-1234765
+Format 07 Plus parens around group,+234 (816) 1234765
+Format 08 Plain digits parens no plus,234(816)1234765
+Format 09 Plus mixed space dash,+234 816-1234765
+Format 10 Plus mixed dash parens,+234-(816)-1234765
+Format 11 Leading zero domestic WA REJECT,08161234765
+Format 12 Leading zero spaces WA REJECT,0816 123 4765
+Format 13 Leading zero dashes WA REJECT,0816-123-4765
+Format 14 US style plus dash,+1-980-555-1234
+Format 15 US style plus parens dash,+1 (980) 555-1234
+Format 16 Too short REJECTED,12345
+Format 17 Too long REJECTED,123456789012345678
+Format 18 Contains letters REJECTED,234abc1234567
+Format 19 Just a plus REJECTED,+
+Format 20 Double plus REJECTED,++2348161234765
