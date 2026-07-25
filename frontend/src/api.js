@@ -38,6 +38,32 @@ export function logoutUser() {
   localStorage.removeItem('username')
 }
 
+export async function getWhatsappNumber() {
+  const response = await fetch(`${BASE_URL}/profile/whatsapp-number/`, {
+    headers: getAuthHeaders(),
+  })
+
+  const data = await response.json()
+  if (!response.ok) {
+    throw new Error(data.error || 'Failed to load WhatsApp number')
+  }
+  return data
+}
+
+export async function updateWhatsappNumber(whatsappNumber) {
+  const response = await fetch(`${BASE_URL}/profile/whatsapp-number/`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+    body: JSON.stringify({ whatsapp_number: whatsappNumber }),
+  })
+
+  const data = await response.json()
+  if (!response.ok) {
+    throw new Error(data.error || 'Failed to update WhatsApp number')
+  }
+  return data
+}
+
 export async function createCampaign({ name, messageText, sendMode, contacts, mediaFiles }) {
   const formData = new FormData()
   formData.append('name', name)
@@ -68,11 +94,14 @@ export async function startSending(campaignId) {
     headers: getAuthHeaders(),
   })
 
+  const data = await response.json()
   if (!response.ok) {
-    throw new Error('Failed to start sending')
+    // Surfaces backend messages like "Add your WhatsApp phone number in
+    // settings before sending" instead of a generic failure string.
+    throw new Error(data.error || 'Failed to start sending')
   }
 
-  return response.json()
+  return data
 }
 
 export async function getCampaignStatus(campaignId) {

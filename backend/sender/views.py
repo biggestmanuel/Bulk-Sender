@@ -10,20 +10,21 @@ from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.authtoken.models import Token
 from rest_framework.response import Response
 from rest_framework import status
-from .models import Campaign, Contact, MediaFile
-from .serializers import CampaignSerializer
+from .models import Campaign, Contact, MediaFile, UserProfile
+from .serializers import CampaignSerializer, UserProfileSerializer
 
 PHONE_RE = re.compile(r'^\+?[0-9]{10,15}$')
 MAX_CONTACTS_PER_CAMPAIGN = 5000
 
 
-def _qr_path(user_id):
-    """Per-user QR screenshot path — keeps two users' logins from colliding."""
-    return os.path.join(django_settings.MEDIA_ROOT, f'qr_code_{user_id}.png')
+def _login_code_path(user_id):
+    """Per-user WhatsApp login-code text file — keeps two users' logins
+    from colliding, same idea as the old per-user QR screenshot path."""
+    return os.path.join(django_settings.MEDIA_ROOT, f'login_code_{user_id}.txt')
 
 
-def _qr_slow_flag_path(user_id):
-    return os.path.join(django_settings.MEDIA_ROOT, f'qr_slow_{user_id}.flag')
+def _login_slow_flag_path(user_id):
+    return os.path.join(django_settings.MEDIA_ROOT, f'login_slow_{user_id}.flag')
 
 
 # --- AUTH ---
@@ -68,6 +69,36 @@ def login_user(request):
 
     token, _ = Token.objects.get_or_create(user=user)
     return Response({'token': token.key, 'username': user.username})
+
+
+# --- PROFILE (WhatsApp phone number used for the "log in with phone
+# number" flow, editable anytime, not just on first setup) ---
+
+@api_view(['GET', 'PUT'])
+def whatsapp_profile(request):
+    """
+    GET returns the current WhatsApp number on file (blank string if
+    never set). PUT updates it — validated with the same phone regex
+    used for contacts, since this number needs to actually work with
+    WhatsApp's phone-number login flow.
+    """
+    profile, _ = UserProfile.objects.get_or_create(user=request.user)
+
+    if request.method == 'GET':
+        return Response(UserProfileSerializer(profile).data)
+
+    raw_number = str(request.data.get('whatsapp_number', '')).strip()
+    cleaned = re.sub(r'[\s\-()]', '', raw_number)
+
+    if not PHONE_RE.match(cleaned):
+        return Response(
+            {'error': 'That doesn\'t look like a valid phone number. Include your country code, e.g. +2348161234765.'},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+    profile.whatsapp_number = cleaned
+    profile.save()
+    return Response(UserProfileSerializer(profile).data)
 
 
 # --- CAMPAIGNS (all scoped to the logged-in user) ---
@@ -159,30 +190,36 @@ def get_campaign_status(request, campaign_id):
 
 
 @api_view(['GET'])
-def get_qr_status(request):
+def get_login_status(request):
     """
     Frontend polls this while a campaign is starting up, to know whether
-    a WhatsApp login QR code is currently available to scan, and whether
-    the wait has been going on long enough to warn about a slow network.
+    a WhatsApp login code is currently available to enter on the phone,
+    and whether the wait has been going on long enough to warn about a
+    slow network.
 
-    QR/session state is now per-user (keyed off request.user.id), so two
-    people starting a send around the same time no longer see or
-    overwrite each other's QR code or WhatsApp session.
+    This replaces the old QR-screenshot flow: WhatsApp's "log in with
+    phone number" option returns an 8-character text code instead of a
+    QR image, which sidesteps headless-Chromium QR rendering issues
+    entirely. Login-code state is per-user (keyed off request.user.id),
+    same as the QR state was, so two people starting a send around the
+    same time still don't see or overwrite each other's code.
     """
     user_id = request.user.id
-    qr_ready = os.path.exists(_qr_path(user_id))
-    qr_slow = os.path.exists(_qr_slow_flag_path(user_id))
+    code_path = _login_code_path(user_id)
+    login_slow = os.path.exists(_login_slow_flag_path(user_id))
 
-    response = {'qr_ready': qr_ready, 'qr_slow': qr_slow}
-    if qr_ready:
-        response['qr_url'] = f'/media/qr_code_{user_id}.png'
+    response = {'code_ready': False, 'login_code': None, 'login_slow': login_slow}
+    if os.path.exists(code_path):
+        with open(code_path) as f:
+            response['login_code'] = f.read().strip()
+        response['code_ready'] = True
 
     return Response(response)
 
 
-def _mark_qr_slow(user_id):
+def _mark_login_slow(user_id):
     """Called from the automation script if login is taking a long time."""
-    path = _qr_slow_flag_path(user_id)
+    path = _login_slow_flag_path(user_id)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, 'w') as f:
         f.write('slow')
@@ -198,13 +235,20 @@ def run_campaign_send(campaign_id, user_id):
     wrong user's WhatsApp session, even if this function is ever called
     from somewhere else in the future.
     """
-    slow_flag = _qr_slow_flag_path(user_id)
+    slow_flag = _login_slow_flag_path(user_id)
     if os.path.exists(slow_flag):
         os.remove(slow_flag)
 
     try:
         campaign = Campaign.objects.get(id=campaign_id, owner_id=user_id)
     except Campaign.DoesNotExist:
+        return
+
+    try:
+        profile = UserProfile.objects.get(user_id=user_id)
+    except UserProfile.DoesNotExist:
+        # start_sending already checks this before spawning the thread,
+        # so this should only happen if the profile got deleted mid-flight.
         return
 
     contacts = list(campaign.contacts.filter(status='pending').values('id', 'name', 'phone'))
@@ -218,10 +262,11 @@ def run_campaign_send(campaign_id, user_id):
         contacts=contacts,
         message_text=campaign.message_text,
         user_id=user_id,
+        whatsapp_number=profile.whatsapp_number,
         media_paths=media_paths,
         delay_seconds=delay,
         on_progress=update_status,
-        on_qr_slow=lambda: _mark_qr_slow(user_id)
+        on_login_slow=lambda: _mark_login_slow(user_id)
     )
 
     if os.path.exists(slow_flag):
@@ -232,12 +277,22 @@ def run_campaign_send(campaign_id, user_id):
 def start_sending(request, campaign_id):
     """
     Kicks off the sending process in a background thread so the API responds immediately.
-    Only allows this if the requesting user owns the campaign.
+    Only allows this if the requesting user owns the campaign, and only
+    if they've set a WhatsApp number in their profile — without one there's
+    nothing to enter into the login-code flow, so it's better to catch
+    that here than have the automation script fail 30+ seconds in.
     """
     try:
         campaign = Campaign.objects.get(id=campaign_id, owner=request.user)
     except Campaign.DoesNotExist:
         return Response({'error': 'Campaign not found'}, status=status.HTTP_404_NOT_FOUND)
+
+    profile, _ = UserProfile.objects.get_or_create(user=request.user)
+    if not profile.whatsapp_number:
+        return Response(
+            {'error': 'Add your WhatsApp phone number in settings before sending.'},
+            status=status.HTTP_400_BAD_REQUEST
+        )
 
     thread = threading.Thread(target=run_campaign_send, args=(campaign_id, request.user.id))
     thread.start()

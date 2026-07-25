@@ -5,7 +5,8 @@ import ContactList from './components/ContactList'
 import MessageComposer from './components/MessageComposer'
 import SendSettings from './components/SendSettings'
 import SendProgress from './components/SendProgress'
-import QrScanner from './components/QrScanner'
+import LoginCode from './components/LoginCode'
+import WhatsAppNumberSettings from './components/WhatsAppNumberSettings'
 import Auth from './components/Auth'
 import { isValidPhone } from './utils/phone'
 import { createCampaign, startSending, getCampaignStatus, logoutUser } from './api'
@@ -36,9 +37,10 @@ function App() {
   // map its columns.
   const [pendingMerge, setPendingMerge] = useState(null) // { headers, dataRows } | null
 
-  // Tracks whether we're still waiting on a WhatsApp QR scan before
-  // the actual sending/progress polling should start.
-  const [awaitingQrScan, setAwaitingQrScan] = useState(false)
+  // Tracks whether we're still waiting on the WhatsApp login code to be
+  // entered on the person's phone before the actual sending/progress
+  // polling should start.
+  const [awaitingLogin, setAwaitingLogin] = useState(false)
   const pendingCampaignIdRef = useRef(null)
 
   const pollIntervalRef = useRef(null)
@@ -199,22 +201,26 @@ function App() {
         mediaFiles: messageData.mediaFiles || [],
       })
 
+      // This throws with the backend's actual error message (e.g. "Add
+      // your WhatsApp phone number in settings before sending") rather
+      // than a generic failure, so the person knows exactly what to fix.
       await startSending(campaign.id)
 
-      // Instead of polling progress immediately, wait for QR login first.
-      // QrScanner will call handleQrReady() once WhatsApp is logged in.
+      // Instead of polling progress immediately, wait for the login code
+      // to be entered first. LoginCode will call handleLoginReady() once
+      // WhatsApp is logged in.
       pendingCampaignIdRef.current = campaign.id
-      setAwaitingQrScan(true)
+      setAwaitingLogin(true)
 
     } catch (err) {
       console.error(err)
-      setError('Something went wrong starting the send. Check that the backend server is running.')
+      setError(err.message || 'Something went wrong starting the send. Check that the backend server is running.')
       setSending(false)
     }
   }
 
-  function handleQrReady() {
-    setAwaitingQrScan(false)
+  function handleLoginReady() {
+    setAwaitingLogin(false)
     if (pendingCampaignIdRef.current) {
       startProgressPolling(pendingCampaignIdRef.current)
     }
@@ -227,16 +233,19 @@ function App() {
 
   return (
     <div style={{ maxWidth: '760px', margin: '0 auto', padding: 'var(--space-xl) var(--space-lg)' }}>
-      <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 'var(--space-lg)' }}>
+      <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 'var(--space-lg)', gap: 'var(--space-md)', flexWrap: 'wrap' }}>
         <div>
           <h1 style={{ marginBottom: '2px' }}>WhatsApp Bulk Sender</h1>
           <p style={{ fontSize: '13px' }}>Send at your own pace.</p>
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-md)' }}>
-          <span style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>{username}</span>
-          <button onClick={handleLogout} className="bs-btn bs-btn-secondary" style={{ padding: '6px 14px', fontSize: '13px' }}>
-            Log out
-          </button>
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 'var(--space-sm)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-md)' }}>
+            <span style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>{username}</span>
+            <button onClick={handleLogout} className="bs-btn bs-btn-secondary" style={{ padding: '6px 14px', fontSize: '13px' }}>
+              Log out
+            </button>
+          </div>
+          <WhatsAppNumberSettings />
         </div>
       </header>
 
@@ -321,7 +330,7 @@ function App() {
         <p style={{ color: 'var(--danger)', marginTop: 'var(--space-md)', fontSize: '13px' }}>{error}</p>
       )}
 
-      {awaitingQrScan && <QrScanner onReady={handleQrReady} />}
+      {awaitingLogin && <LoginCode onReady={handleLoginReady} />}
 
       {(sending || sentCount > 0 || failedCount > 0) && (
         <SendProgress total={currentContacts.length} sent={sentCount} failed={failedCount} />

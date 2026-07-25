@@ -42,3 +42,21 @@ class MediaFile(models.Model):
 
     def __str__(self):
         return self.file.name
+
+
+class UserProfile(models.Model):
+    """
+    Holds the WhatsApp phone number each user links their account with,
+    used for the "log in with phone number" flow instead of QR scanning.
+    Separate model (rather than extending User directly) so it can grow
+    later — send preferences, etc. — without touching auth.
+
+    whatsapp_number starts blank; a user must set it via
+    GET/PUT /api/profile/whatsapp-number/ before they can start a send
+    (enforced in views.start_sending).
+    """
+    user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='profile')
+    whatsapp_number = EncryptedCharField(max_length=20, blank=True, default='')
+
+    def __str__(self):
+        return f"Profile for {self.user.username}"
