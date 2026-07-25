@@ -28,6 +28,19 @@ def get_login_code_path(user_id):
     return os.path.join(MEDIA_DIR, f'login_code_{user_id}.txt')
 
 
+def _mark_all_failed(contacts, on_progress):
+    """
+    Used on both give-up paths below. Without this, contacts that never
+    got a chance to send just sit at 'pending' forever, which makes the
+    frontend's progress polling spin indefinitely instead of reporting
+    the send as failed.
+    """
+    if not on_progress:
+        return
+    for contact in contacts:
+        on_progress(contact['id'], 'failed')
+
+
 def send_whatsapp_messages(contacts, message_text, user_id, whatsapp_number, media_paths=None,
                             delay_seconds=20, on_progress=None, on_login_slow=None):
     media_paths = media_paths or []
@@ -62,6 +75,7 @@ def send_whatsapp_messages(contacts, message_text, user_id, whatsapp_number, med
             page.goto("https://web.whatsapp.com", timeout=120000)
         except Exception as e:
             print(f"Failed to load web.whatsapp.com for user {user_id}: {e}")
+            _mark_all_failed(contacts, on_progress)
             browser.close()
             return
 
@@ -70,42 +84,34 @@ def send_whatsapp_messages(contacts, message_text, user_id, whatsapp_number, med
         # link next to the QR code. Clicking it and entering the number
         # generates an 8-character code HERE, in this browser session —
         # that's the code the person then types into their phone under
-        # Linked Devices to confirm the link. Much easier to serve
-        # reliably through the app UI than a QR screenshot that depends
-        # on the canvas actually rendering.
-        #
-        # NOTE: the selectors below are WhatsApp Web's DOM structure as of
-        # this writing. WhatsApp changes this UI periodically without
-        # notice, so if this block throws, check the debug screenshot it
-        # saves and adjust the selectors to match what's actually on the
-        # page — this is the one part of this flow that needs live
-        # verification, not something fixable from code alone.
+        # Linked Devices to confirm the link. Selectors below were pulled
+        # from a live inspection of the actual page (not guessed), except
+        # where noted.
         try:
             page.click('text=Log in with phone number', timeout=30000)
 
-            # whatsapp_number is stored as "+<countrycode><number>" (see
-            # UserProfile / the phone regex in views.py). WhatsApp's input
-            # here expects just the digits after the '+' — it has its own
-            # country selector, but pasting the full digit string usually
-            # gets auto-parsed correctly. Worth confirming visually the
-            # first time this runs.
-            digits = whatsapp_number.lstrip('+')
             phone_input = page.wait_for_selector(
-                'input[aria-label="Type your phone number."]', timeout=15000
+                '[data-testid="phone-number-input"]', timeout=15000
             )
-            phone_input.fill(digits)
-            page.click('div[role="button"]:has-text("Next")', timeout=10000)
+            # fill() clears the field first, so this overwrites whatever
+            # country WhatsApp auto-detected (e.g. "+234 ") with the real
+            # number. Pass the full "+countrycode..." string as stored —
+            # the field expects the '+', don't strip it.
+            phone_input.fill(whatsapp_number)
 
-            # The code WhatsApp displays here is what gets typed into the
-            # phone, not something coming from it. Grabbing the container's
-            # text rather than individual character elements, since
-            # WhatsApp sometimes renders each character in its own span
-            # and the exact structure is the part most likely to have
-            # shifted by the time this runs.
-            code_container = page.wait_for_selector(
-                '[data-testid="link-with-phone-number-code"]', timeout=30000
+            page.click('span:text-is("Next")', timeout=10000)
+
+            # The code renders as one <div> per character plus a literal
+            # "-" span in between, with no wrapping data-testid or stable
+            # class name (WhatsApp's classes here look build-hashed).
+            # Anchoring on the dash — content that won't change — and
+            # reading its parent element is more durable than guessing at
+            # a container selector.
+            dash_span = page.wait_for_selector(
+                'span[aria-hidden="true"]:text-is("-")', timeout=30000
             )
-            code_text = code_container.inner_text().strip()
+            code_container = dash_span.evaluate_handle("el => el.parentElement").as_element()
+            code_text = code_container.inner_text().replace('\n', '').strip()
 
             os.makedirs(os.path.dirname(login_code_path), exist_ok=True)
             with open(login_code_path, 'w') as f:
@@ -143,6 +149,7 @@ def send_whatsapp_messages(contacts, message_text, user_id, whatsapp_number, med
                 logged_in = True
             except Exception:
                 print("Gave up after 10 minutes total — no login detected. Aborting send.")
+                _mark_all_failed(contacts, on_progress)
                 browser.close()
                 return
 
