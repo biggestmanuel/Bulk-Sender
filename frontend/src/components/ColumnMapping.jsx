@@ -3,40 +3,65 @@ import { useState } from 'react'
 function ColumnMapping({ headers, onMappingDone }) {
   const [nameCol, setNameCol] = useState('')
   const [phoneCol, setPhoneCol] = useState('')
+  const [error, setError] = useState('')
 
   function handleConfirm() {
     if (!nameCol || !phoneCol) {
-      alert('Please select both a Name column and a Phone column')
+      setError('Choose both a name column and a phone column.')
       return
     }
+    setError('')
     onMappingDone({ nameCol, phoneCol })
   }
 
   return (
-    <div style={{ marginTop: '20px', padding: '20px', border: '1px solid lightgray' }}>
-      <h3>Map your columns</h3>
+    <div className="bs-card" style={{ marginTop: 'var(--space-lg)' }}>
+      <h2>Map your columns</h2>
+      <p style={{ marginBottom: 'var(--space-md)' }}>
+        Tell us which column holds each contact's name and phone number.
+      </p>
 
-      <div style={{ marginBottom: '10px' }}>
-        <label>Which column is the Name? </label>
-        <select value={nameCol} onChange={(e) => setNameCol(e.target.value)}>
-          <option value="">-- Select --</option>
-          {headers.map((header, i) => (
-            <option key={i} value={header}>{header}</option>
-          ))}
-        </select>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 'var(--space-md)', marginBottom: 'var(--space-md)' }}>
+        <div>
+          <label className="bs-label" htmlFor="name-col">Name column</label>
+          <select
+            id="name-col"
+            className="bs-input"
+            value={nameCol}
+            onChange={(e) => setNameCol(e.target.value)}
+          >
+            <option value="">Select a column</option>
+            {headers.map((header, i) => (
+              <option key={i} value={header}>{header}</option>
+            ))}
+          </select>
+        </div>
+
+        <div>
+          <label className="bs-label" htmlFor="phone-col">Phone column</label>
+          <select
+            id="phone-col"
+            className="bs-input"
+            value={phoneCol}
+            onChange={(e) => setPhoneCol(e.target.value)}
+          >
+            <option value="">Select a column</option>
+            {headers.map((header, i) => (
+              <option key={i} value={header}>{header}</option>
+            ))}
+          </select>
+        </div>
       </div>
 
-      <div style={{ marginBottom: '10px' }}>
-        <label>Which column is the Phone number? </label>
-        <select value={phoneCol} onChange={(e) => setPhoneCol(e.target.value)}>
-          <option value="">-- Select --</option>
-          {headers.map((header, i) => (
-            <option key={i} value={header}>{header}</option>
-          ))}
-        </select>
-      </div>
+      {error && (
+        <p style={{ color: 'var(--danger)', fontSize: '13px', marginBottom: 'var(--space-md)' }}>
+          {error}
+        </p>
+      )}
 
-      <button onClick={handleConfirm}>Confirm Mapping</button>
+      <button onClick={handleConfirm} className="bs-btn bs-btn-primary">
+        Confirm mapping
+      </button>
     </div>
   )
 }

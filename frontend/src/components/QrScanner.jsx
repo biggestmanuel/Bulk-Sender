@@ -5,7 +5,7 @@ import { useState, useEffect } from 'react'
 // shows a "slow network" warning if it's taking a long time,
 // and calls onReady() once WhatsApp has logged in (QR disappears).
 //
-// NOTE: now sends the auth token with every poll. QR state is per-user on
+// NOTE: sends the auth token with every poll. QR state is per-user on
 // the backend, so without the token the server wouldn't know whose QR to
 // return — this is what makes it safe for two people to start a send at
 // the same time without seeing or overwriting each other's QR code.
@@ -45,16 +45,20 @@ function QrScanner({ onReady }) {
   if (!qrUrl) return null
 
   return (
-    <div style={{ marginTop: '20px', padding: '20px', border: '1px solid lightgray', textAlign: 'center' }}>
-      <h3>Scan this QR code with WhatsApp</h3>
-      <p style={{ fontSize: '14px', color: 'gray' }}>
-        Open WhatsApp on your phone → Settings → Linked Devices → Link a Device
+    <div className="bs-card" style={{ marginTop: 'var(--space-lg)', textAlign: 'center' }}>
+      <h2>Scan this code with WhatsApp</h2>
+      <p style={{ marginBottom: 'var(--space-md)' }}>
+        Open WhatsApp on your phone → Settings → Linked devices → Link a device.
       </p>
-      <img src={qrUrl} alt="WhatsApp QR Code" style={{ maxWidth: '300px' }} />
+      <img
+        src={qrUrl}
+        alt="WhatsApp QR code"
+        style={{ maxWidth: '260px', borderRadius: 'var(--radius-md)', border: '1px solid var(--border)' }}
+      />
 
       {slowNetwork && (
-        <p style={{ marginTop: '12px', color: '#d9363e', fontWeight: 'bold' }}>
-          This is taking a while — check your internet connection. We'll keep waiting.
+        <p style={{ marginTop: 'var(--space-md)', color: 'var(--danger)', fontWeight: 500, fontSize: '13px' }}>
+          This is taking a while — check your connection. Still waiting.
         </p>
       )}
     </div>

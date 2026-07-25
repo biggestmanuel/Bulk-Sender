@@ -3,6 +3,7 @@ import { useState } from 'react'
 function MessageComposer({ onMessageReady }) {
   const [message, setMessage] = useState('')
   const [mediaFiles, setMediaFiles] = useState([])
+  const [error, setError] = useState('')
 
   function handleMediaChange(e) {
     const files = Array.from(e.target.files)
@@ -15,38 +16,43 @@ function MessageComposer({ onMessageReady }) {
 
   function handleConfirm() {
     if (!message.trim()) {
-      alert('Please type a message')
+      setError('Write a message before continuing.')
       return
     }
+    setError('')
     onMessageReady({ message, mediaFiles })
   }
 
   return (
-    <div style={{ marginTop: '20px', padding: '20px', border: '1px solid lightgray' }}>
-      <h3>Compose your message</h3>
-
-      <textarea
-        rows="4"
-        cols="50"
-        placeholder="Type your message here... Use {name} to insert each contact's name automatically"
-        value={message}
-        onChange={(e) => setMessage(e.target.value)}
-      />
-      <p style={{ fontSize: '12px', color: 'gray' }}>
-        Tip: Type <code>{'{name}'}</code> anywhere in your message and it'll be replaced with each contact's name.
+    <div className="bs-card" style={{ marginTop: 'var(--space-lg)' }}>
+      <h2>Compose your message</h2>
+      <p style={{ marginBottom: 'var(--space-md)' }}>
+        Use <code style={{ background: 'var(--bg-card-muted)', padding: '1px 6px', borderRadius: '4px', fontSize: '13px' }}>{'{name}'}</code> anywhere to insert each contact's name.
       </p>
 
-      <div style={{ marginTop: '10px' }}>
-        <label>Attach images or videos (optional): </label>
-        <input type="file" accept="image/*,video/*" multiple onChange={handleMediaChange} />
+      <textarea
+        rows="5"
+        className="bs-input"
+        placeholder="Hi {name}, just checking in about..."
+        value={message}
+        onChange={(e) => setMessage(e.target.value)}
+        style={{ resize: 'vertical', fontFamily: 'var(--font-body)', marginBottom: 'var(--space-md)' }}
+      />
+
+      <div style={{ marginBottom: 'var(--space-md)' }}>
+        <label className="bs-label">Attachments (optional)</label>
+        <label className="bs-btn bs-btn-secondary" style={{ cursor: 'pointer' }}>
+          Add photos or videos
+          <input type="file" accept="image/*,video/*" multiple onChange={handleMediaChange} style={{ display: 'none' }} />
+        </label>
       </div>
 
       {mediaFiles.length > 0 && (
-        <ul style={{ marginTop: '10px' }}>
+        <ul style={{ listStyle: 'none', padding: 0, margin: '0 0 var(--space-md)', display: 'flex', flexDirection: 'column', gap: '6px' }}>
           {mediaFiles.map((file, i) => (
-            <li key={i}>
-              {file.name}{' '}
-              <button onClick={() => handleRemoveFile(i)} style={{ marginLeft: '8px' }}>
+            <li key={i} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: '13px', background: 'var(--bg-card-muted)', padding: '8px 12px', borderRadius: 'var(--radius-sm)' }}>
+              <span>{file.name}</span>
+              <button onClick={() => handleRemoveFile(i)} className="bs-btn bs-btn-danger" style={{ padding: '2px 8px', fontSize: '12px' }}>
                 Remove
               </button>
             </li>
@@ -54,8 +60,14 @@ function MessageComposer({ onMessageReady }) {
         </ul>
       )}
 
-      <button onClick={handleConfirm} style={{ marginTop: '10px' }}>
-        Confirm Message
+      {error && (
+        <p style={{ color: 'var(--danger)', fontSize: '13px', marginBottom: 'var(--space-md)' }}>
+          {error}
+        </p>
+      )}
+
+      <button onClick={handleConfirm} className="bs-btn bs-btn-primary">
+        Confirm message
       </button>
     </div>
   )

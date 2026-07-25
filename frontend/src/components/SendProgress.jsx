@@ -1,27 +1,37 @@
 function SendProgress({ total, sent, failed }) {
   const completed = sent + failed
   const percent = total > 0 ? Math.round((completed / total) * 100) : 0
-  const barColor = failed > 0 ? '#d9363e' : 'green'
+  const hasFailures = failed > 0
+
+  // Signature pace-tick row: caps at 40 ticks so huge campaigns (up to
+  // 5,000 contacts) don't render thousands of DOM nodes. Each tick then
+  // represents a slice of the total rather than one contact each.
+  const tickCount = Math.min(total, 40) || 1
+  const doneTicks = Math.round((completed / (total || 1)) * tickCount)
+  const failedTicks = Math.round((failed / (total || 1)) * tickCount)
 
   return (
-    <div style={{ marginTop: '20px', padding: '20px', border: '1px solid lightgray' }}>
-      <h3>Sending Progress</h3>
-      <p>
-        {completed} / {total} processed ({percent}%) —{' '}
-        <span style={{ color: 'green' }}>{sent} sent</span>
-        {failed > 0 && (
-          <span style={{ color: '#d9363e' }}> | {failed} failed</span>
-        )}
-      </p>
-      <div style={{ background: '#eee', borderRadius: '6px', overflow: 'hidden', height: '20px', width: '100%' }}>
-        <div
-          style={{
-            background: barColor,
-            height: '100%',
-            width: `${percent}%`,
-            transition: 'width 0.3s'
-          }}
-        />
+    <div className="bs-card" style={{ marginTop: 'var(--space-lg)' }}>
+      <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 'var(--space-md)' }}>
+        <h2 style={{ margin: 0 }}>Sending</h2>
+        <span style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>
+          {completed} / {total} · {percent}%
+        </span>
+      </div>
+
+      <div className="bs-pace" style={{ marginBottom: 'var(--space-md)' }} aria-hidden="true">
+        {Array.from({ length: tickCount }).map((_, i) => {
+          let className = 'bs-pace-tick'
+          if (i < doneTicks - failedTicks) className += ' is-done'
+          else if (i < doneTicks) className += ' is-failed'
+          return <span key={i} className={className} />
+        })}
+      </div>
+
+      <div style={{ display: 'flex', gap: '8px' }}>
+        <span className="bs-badge bs-badge-success">{sent} sent</span>
+        {hasFailures && <span className="bs-badge bs-badge-danger">{failed} failed</span>}
+        {!hasFailures && completed < total && <span className="bs-badge bs-badge-muted">{total - completed} remaining</span>}
       </div>
     </div>
   )

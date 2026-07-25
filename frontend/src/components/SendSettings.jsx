@@ -8,33 +8,72 @@ function SendSettings({ onSettingsReady }) {
   }
 
   return (
-    <div style={{ marginTop: '20px', padding: '20px', border: '1px solid lightgray' }}>
-      <h3>Send Settings</h3>
+    <div className="bs-card" style={{ marginTop: 'var(--space-lg)' }}>
+      <h2>Send settings</h2>
+      <p style={{ marginBottom: 'var(--space-md)' }}>
+        Choose how quickly messages go out.
+      </p>
 
-      <label style={{ display: 'block', marginBottom: '8px' }}>
-        <input
-          type="radio"
-          name="sendMode"
-          value="delay"
-          checked={mode === 'delay'}
-          onChange={() => setMode('delay')}
-        />
-        {' '}Send with delay (15-30 sec between each) — safer, slower
-      </label>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', marginBottom: 'var(--space-md)' }}>
+        <label
+          style={{
+            display: 'flex',
+            alignItems: 'flex-start',
+            gap: '10px',
+            padding: '12px 14px',
+            border: `1px solid ${mode === 'delay' ? 'var(--accent)' : 'var(--border)'}`,
+            borderRadius: 'var(--radius-md)',
+            background: mode === 'delay' ? 'var(--accent-bg)' : 'var(--bg-card)',
+            cursor: 'pointer',
+          }}
+        >
+          <input
+            type="radio"
+            name="sendMode"
+            value="delay"
+            checked={mode === 'delay'}
+            onChange={() => setMode('delay')}
+            style={{ marginTop: '3px' }}
+          />
+          <span>
+            <strong style={{ display: 'block', fontSize: '14px' }}>Send with delay</strong>
+            <span style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>
+              15–30 seconds between messages. Safer for your number, slower to finish.
+            </span>
+          </span>
+        </label>
 
-      <label style={{ display: 'block', marginBottom: '8px' }}>
-        <input
-          type="radio"
-          name="sendMode"
-          value="instant"
-          checked={mode === 'instant'}
-          onChange={() => setMode('instant')}
-        />
-        {' '}Send all at once — fast, higher risk
-      </label>
+        <label
+          style={{
+            display: 'flex',
+            alignItems: 'flex-start',
+            gap: '10px',
+            padding: '12px 14px',
+            border: `1px solid ${mode === 'instant' ? 'var(--danger)' : 'var(--border)'}`,
+            borderRadius: 'var(--radius-md)',
+            background: mode === 'instant' ? 'var(--danger-bg)' : 'var(--bg-card)',
+            cursor: 'pointer',
+          }}
+        >
+          <input
+            type="radio"
+            name="sendMode"
+            value="instant"
+            checked={mode === 'instant'}
+            onChange={() => setMode('instant')}
+            style={{ marginTop: '3px' }}
+          />
+          <span>
+            <strong style={{ display: 'block', fontSize: '14px' }}>Send all at once</strong>
+            <span style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>
+              Fastest option, but carries a real risk of your WhatsApp number getting banned.
+            </span>
+          </span>
+        </label>
+      </div>
 
-      <button onClick={handleConfirm} style={{ marginTop: '10px' }}>
-        Confirm Settings
+      <button onClick={handleConfirm} className="bs-btn bs-btn-primary">
+        Confirm settings
       </button>
     </div>
   )

@@ -7,9 +7,9 @@ import Papa from 'papaparse'
 function CsvUpload({ onContactsLoaded }) {
   const [fileName, setFileName] = useState('')
   const [error, setError] = useState('')
+  const [isDragging, setIsDragging] = useState(false)
 
-  function handleFile(e) {
-    const file = e.target.files[0]
+  function parseFile(file) {
     if (!file) return
 
     setFileName(file.name)
@@ -21,7 +21,7 @@ function CsvUpload({ onContactsLoaded }) {
         const rows = results.data
 
         if (!rows || rows.length < 2) {
-          setError('CSV appears to be empty or missing a header row.')
+          setError('This CSV looks empty or is missing a header row.')
           return
         }
 
@@ -33,17 +33,54 @@ function CsvUpload({ onContactsLoaded }) {
         onContactsLoaded({ headers, dataRows })
       },
       error: (err) => {
-        setError(`Could not read CSV: ${err.message}`)
+        setError(`Couldn't read that CSV: ${err.message}`)
       },
     })
   }
 
+  function handleFileInput(e) {
+    parseFile(e.target.files[0])
+  }
+
+  function handleDrop(e) {
+    e.preventDefault()
+    setIsDragging(false)
+    parseFile(e.dataTransfer.files[0])
+  }
+
   return (
-    <div style={{ border: '2px dashed gray', padding: '30px', textAlign: 'center' }}>
-      <p>Drop CSV here or click to browse</p>
-      <input type="file" accept=".csv" onChange={handleFile} />
-      {fileName && !error && <p>Loaded: {fileName}</p>}
-      {error && <p style={{ color: 'red' }}>{error}</p>}
+    <div
+      className="bs-card"
+      onDragOver={(e) => { e.preventDefault(); setIsDragging(true) }}
+      onDragLeave={() => setIsDragging(false)}
+      onDrop={handleDrop}
+      style={{
+        textAlign: 'center',
+        borderStyle: 'dashed',
+        borderColor: isDragging ? 'var(--accent)' : 'var(--border)',
+        background: isDragging ? 'var(--accent-bg)' : 'var(--bg-card)',
+        transition: 'border-color 0.15s ease, background 0.15s ease',
+      }}
+    >
+      <h2>Upload contacts</h2>
+      <p style={{ marginBottom: 'var(--space-md)' }}>
+        Drop a CSV here, or choose a file. It needs a header row with a name column and a phone column.
+      </p>
+      <label className="bs-btn bs-btn-secondary" style={{ cursor: 'pointer' }}>
+        Choose CSV file
+        <input type="file" accept=".csv" onChange={handleFileInput} style={{ display: 'none' }} />
+      </label>
+
+      {fileName && !error && (
+        <p style={{ marginTop: 'var(--space-md)', fontSize: '13px', color: 'var(--text-primary)' }}>
+          Loaded <strong>{fileName}</strong>
+        </p>
+      )}
+      {error && (
+        <p style={{ marginTop: 'var(--space-md)', color: 'var(--danger)', fontSize: '13px' }}>
+          {error}
+        </p>
+      )}
     </div>
   )
 }

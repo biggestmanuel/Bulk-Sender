@@ -118,7 +118,7 @@ function App() {
 
     if (settings.mode === 'instant') {
       const confirmed = window.confirm(
-        '⚠️ You chose "Send all at once". This carries a real risk of the WhatsApp number getting banned. Are you sure you want to continue?'
+        'You chose "Send all at once". This carries a real risk of the WhatsApp number getting banned. Continue?'
       )
       if (!confirmed) return
     }
@@ -169,16 +169,19 @@ function App() {
   }
 
   return (
-    <div style={{ padding: '40px', fontFamily: 'sans-serif' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <h1>WhatsApp Bulk Sender</h1>
-        <div style={{ fontSize: '14px' }}>
-          Logged in as <strong>{username}</strong>{' '}
-          <button onClick={handleLogout} style={{ marginLeft: '10px' }}>
-            Log Out
+    <div style={{ maxWidth: '760px', margin: '0 auto', padding: 'var(--space-xl) var(--space-lg)' }}>
+      <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 'var(--space-lg)' }}>
+        <div>
+          <h1 style={{ marginBottom: '2px' }}>WhatsApp Bulk Sender</h1>
+          <p style={{ fontSize: '13px' }}>Send at your own pace.</p>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-md)' }}>
+          <span style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>{username}</span>
+          <button onClick={handleLogout} className="bs-btn bs-btn-secondary" style={{ padding: '6px 14px', fontSize: '13px' }}>
+            Log out
           </button>
         </div>
-      </div>
+      </header>
 
       <CsvUpload onContactsLoaded={handleContactsLoaded} />
 
@@ -194,8 +197,8 @@ function App() {
             mapping={mapping}
             onContactsUpdated={handleContactsUpdated}
           />
-          <button onClick={() => setEditingMapping(true)} style={{ marginTop: '10px' }}>
-            Edit Column Mapping
+          <button onClick={() => setEditingMapping(true)} className="bs-btn bs-btn-secondary" style={{ marginTop: 'var(--space-sm)' }}>
+            Edit column mapping
           </button>
         </div>
       )}
@@ -205,9 +208,17 @@ function App() {
       )}
 
       {messageData && !editingMessage && (
-        <div style={{ marginTop: '10px' }}>
-          <p>Message ready: "{messageData.message.slice(0, 50)}{messageData.message.length > 50 ? '...' : ''}"</p>
-          <button onClick={() => { setEditingMessage(true); setSentCount(0); setFailedCount(0); }}>Edit Message</button>
+        <div className="bs-card" style={{ marginTop: 'var(--space-lg)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <p style={{ fontSize: '13px', color: 'var(--text-primary)' }}>
+            Message ready: "{messageData.message.slice(0, 60)}{messageData.message.length > 60 ? '…' : ''}"
+          </p>
+          <button
+            onClick={() => { setEditingMessage(true); setSentCount(0); setFailedCount(0); }}
+            className="bs-btn bs-btn-secondary"
+            style={{ padding: '6px 14px', fontSize: '13px' }}
+          >
+            Edit message
+          </button>
         </div>
       )}
 
@@ -216,19 +227,29 @@ function App() {
       )}
 
       {settings && !editingSettings && (
-        <div style={{ marginTop: '10px' }}>
-          <p>Send mode: {settings.mode === 'delay' ? 'With delay (safer)' : 'All at once (risky)'}</p>
-          <button onClick={() => { setEditingSettings(true); setSentCount(0); setFailedCount(0); }}>Edit Send Settings</button>
+        <div className="bs-card" style={{ marginTop: 'var(--space-lg)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <p style={{ fontSize: '13px', color: 'var(--text-primary)' }}>
+            Send mode: {settings.mode === 'delay' ? 'With delay (safer)' : 'All at once (risky)'}
+          </p>
+          <button
+            onClick={() => { setEditingSettings(true); setSentCount(0); setFailedCount(0); }}
+            className="bs-btn bs-btn-secondary"
+            style={{ padding: '6px 14px', fontSize: '13px' }}
+          >
+            Edit settings
+          </button>
         </div>
       )}
 
       {messageData && settings && !sending && sentCount === 0 && failedCount === 0 && !editingMessage && !editingMapping && !editingSettings && (
-        <button onClick={handleStartSend} style={{ marginTop: '20px', padding: '10px 20px' }}>
-          Start Send
+        <button onClick={handleStartSend} className="bs-btn bs-btn-primary" style={{ marginTop: 'var(--space-lg)', padding: '12px 24px' }}>
+          Start send
         </button>
       )}
 
-      {error && <p style={{ color: 'red' }}>{error}</p>}
+      {error && (
+        <p style={{ color: 'var(--danger)', marginTop: 'var(--space-md)', fontSize: '13px' }}>{error}</p>
+      )}
 
       {awaitingQrScan && <QrScanner onReady={handleQrReady} />}
 
