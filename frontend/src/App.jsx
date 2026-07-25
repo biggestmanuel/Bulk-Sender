@@ -29,6 +29,13 @@ function App() {
   const [editingMessage, setEditingMessage] = useState(false)
   const [editingSettings, setEditingSettings] = useState(false)
 
+  // When a second CSV is uploaded with different headers than the first,
+  // we need to run column mapping again JUST for the incoming file before
+  // we can convert its rows into the existing header shape and append them.
+  // This holds that incoming file + mode while we wait for the person to
+  // map its columns.
+  const [pendingMerge, setPendingMerge] = useState(null) // { headers, dataRows } | null
+
   // Tracks whether we're still waiting on a WhatsApp QR scan before
   // the actual sending/progress polling should start.
   const [awaitingQrScan, setAwaitingQrScan] = useState(false)
@@ -47,10 +54,7 @@ function App() {
     setUsername(null)
   }
 
-  function handleContactsLoaded(data) {
-    setCsvData(data)
-    setCurrentContacts(data.dataRows)
-    setMapping(null)
+  function resetDownstreamState() {
     setMessageData(null)
     setSettings(null)
     setSentCount(0)
@@ -59,6 +63,59 @@ function App() {
     setEditingMapping(false)
     setEditingMessage(false)
     setEditingSettings(false)
+  }
+
+  function handleContactsLoaded(parsed, { mode }) {
+    if (mode === 'replace' || !csvData) {
+      setCsvData(parsed)
+      setCurrentContacts(parsed.dataRows)
+      setMapping(null)
+      resetDownstreamState()
+      return
+    }
+
+    // mode === 'merge'
+    const headersMatch =
+      parsed.headers.length === csvData.headers.length &&
+      parsed.headers.every((h, i) => h === csvData.headers[i])
+
+    if (headersMatch) {
+      // Same column shape — just append directly, existing mapping still applies.
+      setCurrentContacts((prev) => [...(prev || []), ...parsed.dataRows])
+      resetDownstreamState()
+    } else {
+      // Different columns — hold onto the new file and ask the person to
+      // map ITS columns before we can convert its rows into the existing shape.
+      setPendingMerge(parsed)
+    }
+  }
+
+  function handleMergeMappingDone(mergeMapping) {
+    if (!pendingMerge || !csvData || !mapping) return
+
+    const newNameIdx = pendingMerge.headers.indexOf(mergeMapping.nameCol)
+    const newPhoneIdx = pendingMerge.headers.indexOf(mergeMapping.phoneCol)
+    const existingNameIdx = csvData.headers.indexOf(mapping.nameCol)
+    const existingPhoneIdx = csvData.headers.indexOf(mapping.phoneCol)
+
+    // Build new rows shaped to match the EXISTING header layout, so the
+    // current mapping (which points at existing header positions) still
+    // works for every row, old and newly merged alike.
+    const maxIndex = Math.max(existingNameIdx, existingPhoneIdx)
+    const converted = pendingMerge.dataRows.map((row) => {
+      const newRow = new Array(maxIndex + 1).fill('')
+      newRow[existingNameIdx] = row[newNameIdx] ?? ''
+      newRow[existingPhoneIdx] = row[newPhoneIdx] ?? ''
+      return newRow
+    })
+
+    setCurrentContacts((prev) => [...(prev || []), ...converted])
+    setPendingMerge(null)
+    resetDownstreamState()
+  }
+
+  function handleCancelMerge() {
+    setPendingMerge(null)
   }
 
   function handleMappingDone(mappingResult) {
@@ -183,13 +240,26 @@ function App() {
         </div>
       </header>
 
-      <CsvUpload onContactsLoaded={handleContactsLoaded} />
+      <CsvUpload onContactsLoaded={handleContactsLoaded} hasExistingContacts={!!currentContacts && currentContacts.length > 0} />
 
-      {csvData && (!mapping || editingMapping) && (
+      {pendingMerge && (
+        <div className="bs-card" style={{ marginTop: 'var(--space-lg)' }}>
+          <h2>Map the new file's columns</h2>
+          <p style={{ marginBottom: 'var(--space-md)' }}>
+            This file's columns don't match your existing contacts. Tell us which column holds the name and phone number so we can merge it in.
+          </p>
+          <ColumnMapping headers={pendingMerge.headers} onMappingDone={handleMergeMappingDone} />
+          <button onClick={handleCancelMerge} className="bs-btn bs-btn-secondary" style={{ marginTop: 'var(--space-sm)' }}>
+            Cancel merge
+          </button>
+        </div>
+      )}
+
+      {csvData && (!mapping || editingMapping) && !pendingMerge && (
         <ColumnMapping headers={csvData.headers} onMappingDone={handleMappingDone} />
       )}
 
-      {mapping && !editingMapping && (
+      {mapping && !editingMapping && !pendingMerge && (
         <div>
           <ContactList
             headers={csvData.headers}
