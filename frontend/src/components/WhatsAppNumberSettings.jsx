@@ -53,7 +53,7 @@ function WhatsAppNumberSettings() {
           style={{ width: '170px', padding: '6px 8px', fontSize: '13px' }}
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
-          placeholder="+2348161234765"
+          placeholder="+(your country code) 1234567890"
           autoFocus
         />
         <button onClick={handleSave} disabled={saving} className="bs-btn bs-btn-primary" style={{ padding: '6px 12px', fontSize: '12px' }}>
