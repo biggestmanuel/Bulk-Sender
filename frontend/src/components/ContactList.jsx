@@ -350,7 +350,7 @@ function ContactList({ headers, dataRows, mapping, onContactsUpdated }) {
         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px' }}>
           <thead>
             <tr style={{ background: 'var(--bg-card-muted)', position: 'sticky', top: 0 }}>
-              <th style={{ padding: '10px 12px', width: '1%' }}>
+              <th style={{ padding: '10px 12px', width: '1%', textAlign: 'center' }}>
                 <input
                   type="checkbox"
                   checked={selectionModeActive}
@@ -389,7 +389,7 @@ function ContactList({ headers, dataRows, mapping, onContactsUpdated }) {
                       background: isSelected ? 'var(--accent-bg)' : undefined,
                     }}
                   >
-                    <td style={{ padding: '10px 12px' }}>
+                    <td style={{ padding: '10px 12px', textAlign: 'center' }}>
                       {selectionModeActive && (
                         <input
                           type="checkbox"
@@ -399,9 +399,9 @@ function ContactList({ headers, dataRows, mapping, onContactsUpdated }) {
                         />
                       )}
                     </td>
-                    <td style={{ padding: '10px 12px' }}>{row[nameIndex]}</td>
-                    <td style={{ padding: '10px 12px' }}>{row[phoneIndex]}</td>
-                    <td style={{ padding: '10px 12px' }}>
+                    <td style={{ padding: '10px 12px', textAlign: 'left' }}>{row[nameIndex]}</td>
+                    <td style={{ padding: '10px 12px', textAlign: 'left' }}>{row[phoneIndex]}</td>
+                    <td style={{ padding: '10px 12px', textAlign: 'left' }}>
                       <span className={badgeClass}>{badgeLabel}</span>
                     </td>
                     <td style={{ padding: '10px 12px', textAlign: 'right', whiteSpace: 'nowrap' }}>
