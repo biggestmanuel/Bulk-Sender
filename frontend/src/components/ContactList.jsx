@@ -44,6 +44,12 @@ function ContactList({ headers, dataRows, mapping, onContactsUpdated }) {
   const [pendingUndo, setPendingUndo] = useState(null)
   const undoTimerRef = useRef(null)
 
+  // Tracks the most recent array *this component* handed up to the parent
+  // via commitContacts. When dataRows comes back down matching this, it's
+  // just React re-rendering with the parent's copy of our own edit — not a
+  // genuinely new file — so the reset effect below should skip it.
+  const lastEmittedRef = useRef(null)
+
   useEffect(() => {
     return () => {
       if (undoTimerRef.current) clearTimeout(undoTimerRef.current)
@@ -51,6 +57,16 @@ function ContactList({ headers, dataRows, mapping, onContactsUpdated }) {
   }, [])
 
   useEffect(() => {
+    if (dataRows === lastEmittedRef.current) {
+      // This is our own edit/remove/undo echoing back down as a prop —
+      // not a new CSV upload or merge. Just sync contacts, don't touch
+      // selection/undo/editing state (previously this reset ALL of that
+      // on every single edit, which made undo disappear immediately and
+      // selection mode reset unexpectedly).
+      setContacts(dataRows)
+      return
+    }
+
     setContacts(dataRows)
     setEditingIndex(null)
     setPickingCountryFor(null)
@@ -80,6 +96,7 @@ function ContactList({ headers, dataRows, mapping, onContactsUpdated }) {
   }, [classified])
 
   function commitContacts(updated) {
+    lastEmittedRef.current = updated
     setContacts(updated)
     onContactsUpdated(updated)
   }

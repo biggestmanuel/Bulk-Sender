@@ -1,5 +1,6 @@
 import time
 import os
+import random
 import urllib.parse
 from playwright.sync_api import sync_playwright
 
@@ -11,6 +12,28 @@ MEDIA_DIR = os.path.join(os.path.dirname(__file__), '..', 'media')
 # These only matter for people who get stuck.
 LOGIN_SLOW_WARNING_MS = 300000   # 5 min — if still not logged in, flag "slow network"
 LOGIN_TOTAL_TIMEOUT_MS = 600000  # 10 min — real ceiling before giving up entirely
+
+# --- Delay-mode pacing ---
+# A fixed gap between every message (even a "random" one drawn from a
+# narrow band) is itself a bot signal — no person sends thousands of
+# messages back-to-back with zero breaks, varied or not. This aims for a
+# looser, more human rhythm: a wider randomized base gap, plus an
+# occasional longer pause every 20-30 messages, as if someone stepped away
+# for a bit. None of this guarantees avoiding detection — it just moves
+# further from "obviously scripted" than a flat delay does.
+DELAY_MIN_SECONDS = 5
+DELAY_MAX_SECONDS = 15
+LONG_BREAK_MIN_INTERVAL = 20   # messages
+LONG_BREAK_MAX_INTERVAL = 30   # messages
+LONG_BREAK_MIN_SECONDS = 45
+LONG_BREAK_MAX_SECONDS = 120
+
+
+def _next_long_break_at(start_count=0):
+    """Picks how many messages from now the next long break should land,
+    re-rolled each time a break happens so the interval itself isn't fixed
+    either."""
+    return start_count + random.randint(LONG_BREAK_MIN_INTERVAL, LONG_BREAK_MAX_INTERVAL)
 
 
 def get_session_dir(user_id):
@@ -42,7 +65,8 @@ def _mark_all_failed(contacts, on_progress):
 
 
 def send_whatsapp_messages(contacts, message_text, user_id, whatsapp_number, media_paths=None,
-                            delay_seconds=20, on_progress=None, on_login_slow=None, on_login_failed=None):
+                            delay_seconds=20, on_progress=None, on_login_slow=None, on_login_failed=None,
+                            on_login_code_error=None):
     media_paths = media_paths or []
     login_code_path = get_login_code_path(user_id)
     session_dir = get_session_dir(user_id)
@@ -73,6 +97,20 @@ def send_whatsapp_messages(contacts, message_text, user_id, whatsapp_number, med
 
         try:
             page.goto("https://web.whatsapp.com", timeout=120000)
+            # goto() only waits for the 'load' event, but WhatsApp Web keeps
+            # rendering (QR/login box) well after that — a debug screenshot
+            # caught the page still showing its loading spinner over the QR
+            # box at the point the phone-login link search began, which is
+            # the actual root cause of the "code never shows up" symptom.
+            # Waiting for network activity to settle first gives the login
+            # box time to actually paint before we go looking inside it.
+            try:
+                page.wait_for_load_state("networkidle", timeout=20000)
+            except Exception:
+                # Not fatal — some connections never go fully idle (WhatsApp
+                # polls in the background). Fall through and let the
+                # longer selector wait below do the real work.
+                pass
         except Exception as e:
             print(f"Failed to load web.whatsapp.com for user {user_id}: {e}")
             _mark_all_failed(contacts, on_progress)
@@ -89,9 +127,14 @@ def send_whatsapp_messages(contacts, message_text, user_id, whatsapp_number, med
         # Linked Devices to confirm the link. Selectors below were pulled
         # from a live inspection of the actual page (not guessed), except
         # where noted.
+        #
+        # Timeout raised from 15s -> 45s: a debug screenshot showed the page
+        # still mid-load (QR spinner active, login box not fully painted)
+        # at the point this selector search was timing out — 15s wasn't
+        # enough margin on a slower connection or cold Chromium launch.
         try:
             login_link = page.wait_for_selector(
-                'text=Log in with phone number', state='visible', timeout=15000
+                'text=Log in with phone number', state='visible', timeout=45000
             )
 
             # Debug: confirms the link is actually visible/positioned
@@ -144,6 +187,13 @@ def send_whatsapp_messages(contacts, message_text, user_id, whatsapp_number, med
             except Exception:
                 print(f"Could not get login code for user {user_id}: {e}. Could not capture debug screenshot either.")
 
+            # Previously this failure was console/screenshot-only — the
+            # frontend had no signal, so LoginCode.jsx just showed a blank
+            # overlay forever until the unrelated 10-minute login timeout
+            # eventually fired. Surface it immediately instead.
+            if on_login_code_error:
+                on_login_code_error(str(e))
+
         # STAGE 1: wait up to 5 minutes for login. Returns immediately on success —
         # this is NOT a fixed 5-minute delay, just the max wait before we warn.
         logged_in = False
@@ -183,7 +233,13 @@ def send_whatsapp_messages(contacts, message_text, user_id, whatsapp_number, med
         except Exception:
             print("No welcome popup found (or already dismissed) — continuing.")
 
-        for contact in contacts:
+        # Only apply jitter/long-breaks in delay mode. Instant mode is
+        # meant to be fast and stays exactly as before — delay_seconds
+        # (1s) is used directly for it, untouched.
+        is_delay_mode = delay_seconds != 1
+        next_long_break_at = _next_long_break_at() if is_delay_mode else None
+
+        for i, contact in enumerate(contacts):
             phone = contact['phone'].replace('+', '').replace(' ', '')
             personalized_message = message_text.replace('{name}', contact['name'])
             encoded_message = urllib.parse.quote(personalized_message)
@@ -212,6 +268,17 @@ def send_whatsapp_messages(contacts, message_text, user_id, whatsapp_number, med
                 if on_progress:
                     on_progress(contact['id'], 'failed')
 
-            time.sleep(delay_seconds)
+            if not is_delay_mode:
+                time.sleep(delay_seconds)
+                continue
+
+            messages_sent = i + 1
+            if messages_sent >= next_long_break_at:
+                pause = random.uniform(LONG_BREAK_MIN_SECONDS, LONG_BREAK_MAX_SECONDS)
+                print(f"Taking a longer pause ({pause:.0f}s) after {messages_sent} messages.")
+                time.sleep(pause)
+                next_long_break_at = _next_long_break_at(messages_sent)
+            else:
+                time.sleep(random.uniform(DELAY_MIN_SECONDS, DELAY_MAX_SECONDS))
 
         browser.close()

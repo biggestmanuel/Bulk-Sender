@@ -35,6 +35,15 @@ def _login_failed_flag_path(user_id):
     return os.path.join(django_settings.MEDIA_ROOT, f'login_failed_{user_id}.flag')
 
 
+def _login_code_error_path(user_id):
+    """Written if the automation script fails to generate a login code at
+    all (e.g. a Playwright selector didn't match because the page hadn't
+    finished loading). Previously this failure was console/screenshot-only
+    — the frontend had no signal and just showed a blank overlay until the
+    unrelated 10-minute timeout eventually fired."""
+    return os.path.join(django_settings.MEDIA_ROOT, f'login_code_error_{user_id}.txt')
+
+
 # --- AUTH ---
 
 @api_view(['POST'])
@@ -215,17 +224,23 @@ def get_login_status(request):
     code_path = _login_code_path(user_id)
     login_slow = os.path.exists(_login_slow_flag_path(user_id))
     login_failed = os.path.exists(_login_failed_flag_path(user_id))
+    error_path = _login_code_error_path(user_id)
 
     response = {
         'code_ready': False,
         'login_code': None,
         'login_slow': login_slow,
         'login_failed': login_failed,
+        'login_code_error': None,
     }
     if os.path.exists(code_path):
         with open(code_path) as f:
             response['login_code'] = f.read().strip()
         response['code_ready'] = True
+
+    if os.path.exists(error_path):
+        with open(error_path) as f:
+            response['login_code_error'] = f.read().strip()
 
     return Response(response)
 
@@ -247,6 +262,18 @@ def _mark_login_failed(user_id):
         f.write('failed')
 
 
+def _mark_login_code_error(user_id, error_text):
+    """Called from the automation script if it couldn't generate a login
+    code at all. This does NOT stop the send — the script still moves on
+    to wait for the chat list (in case the code did appear but couldn't be
+    scraped) — it just gives the frontend something to show instead of a
+    silent blank overlay while that continues."""
+    path = _login_code_error_path(user_id)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, 'w') as f:
+        f.write(error_text)
+
+
 def run_campaign_send(campaign_id, user_id):
     """
     This runs in a background thread — pulls campaign data and starts sending.
@@ -265,6 +292,10 @@ def run_campaign_send(campaign_id, user_id):
     if os.path.exists(failed_flag):
         os.remove(failed_flag)
 
+    error_path = _login_code_error_path(user_id)
+    if os.path.exists(error_path):
+        os.remove(error_path)
+
     try:
         campaign = Campaign.objects.get(id=campaign_id, owner_id=user_id)
     except Campaign.DoesNotExist:
@@ -279,6 +310,10 @@ def run_campaign_send(campaign_id, user_id):
 
     contacts = list(campaign.contacts.filter(status='pending').values('id', 'name', 'phone'))
     media_paths = [m.file.path for m in campaign.media_files.all()]
+    # This is no longer the actual gap used in delay mode — that's now a
+    # randomized 5-15s pace with occasional longer breaks, computed inside
+    # send_whatsapp_messages. This value only distinguishes delay (any
+    # value other than 1) from instant (1s flat, unchanged).
     delay = 3 if campaign.send_mode == 'delay' else 1
 
     def update_status(contact_id, contact_status):
@@ -293,7 +328,8 @@ def run_campaign_send(campaign_id, user_id):
         delay_seconds=delay,
         on_progress=update_status,
         on_login_slow=lambda: _mark_login_slow(user_id),
-        on_login_failed=lambda: _mark_login_failed(user_id)
+        on_login_failed=lambda: _mark_login_failed(user_id),
+        on_login_code_error=lambda err: _mark_login_code_error(user_id, err)
     )
 
     if os.path.exists(slow_flag):

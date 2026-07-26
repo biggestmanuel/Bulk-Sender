@@ -38,7 +38,7 @@ function SendSettings({ onSettingsReady }) {
           <span>
             <strong style={{ display: 'block', fontSize: '14px' }}>Send with delay</strong>
             <span style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>
-              15–30 seconds between messages. Safer for your number, slower to finish.
+              Randomized gaps between messages, with occasional longer pauses — mimics a human pace. Safer for your number, slower to finish.
             </span>
           </span>
         </label>

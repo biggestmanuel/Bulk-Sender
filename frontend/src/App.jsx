@@ -1,348 +1,534 @@
-import { useState, useRef } from 'react'
-import CsvUpload from './components/CsvUpload'
-import ColumnMapping from './components/ColumnMapping'
-import ContactList from './components/ContactList'
-import MessageComposer from './components/MessageComposer'
-import SendSettings from './components/SendSettings'
-import SendProgress from './components/SendProgress'
-import LoginCode from './components/LoginCode'
-import WhatsAppNumberSettings from './components/WhatsAppNumberSettings'
-import Auth from './components/Auth'
-import { isValidPhone } from './utils/phone'
-import { createCampaign, startSending, getCampaignStatus, logoutUser } from './api'
+import { useState, useEffect, useRef, Fragment, useMemo } from 'react'
+import { classifyPhone, resolveWithCountry } from '../utils/phone'
+import CountryPicker from './CountryPicker'
 
-function App() {
-  // --- AUTH STATE ---
-  const [authToken, setAuthToken] = useState(localStorage.getItem('authToken'))
-  const [username, setUsername] = useState(localStorage.getItem('username'))
+// Sort order: rows needing attention (needs-country, then invalid) always
+// float to the top, so a person scanning a long list immediately sees what
+// needs fixing instead of hunting for it. Valid rows follow, in their
+// original order.
+const STATUS_RANK = { 'needs-country': 0, invalid: 1, valid: 2 }
 
-  const [csvData, setCsvData] = useState(null)
-  const [currentContacts, setCurrentContacts] = useState(null)
-  const [mapping, setMapping] = useState(null)
-  const [messageData, setMessageData] = useState(null)
-  const [settings, setSettings] = useState(null)
-  const [sending, setSending] = useState(false)
-  const [sentCount, setSentCount] = useState(0)
-  const [failedCount, setFailedCount] = useState(0)
-  const [error, setError] = useState('')
+function ContactList({ headers, dataRows, mapping, onContactsUpdated }) {
+  const nameIndex = headers.indexOf(mapping.nameCol)
+  const phoneIndex = headers.indexOf(mapping.phoneCol)
 
-  const [editingMapping, setEditingMapping] = useState(false)
-  const [editingMessage, setEditingMessage] = useState(false)
-  const [editingSettings, setEditingSettings] = useState(false)
+  const [contacts, setContacts] = useState(dataRows)
+  const [editingIndex, setEditingIndex] = useState(null)
+  const [draftName, setDraftName] = useState('')
+  const [draftPhone, setDraftPhone] = useState('')
+  // Which row (by original index) currently has its country picker open —
+  // separate from editingIndex since "needs a country" and "editing the
+  // name/phone text" are different interactions.
+  const [pickingCountryFor, setPickingCountryFor] = useState(null)
 
-  // When a second CSV is uploaded with different headers than the first,
-  // we need to run column mapping again JUST for the incoming file before
-  // we can convert its rows into the existing header shape and append them.
-  // This holds that incoming file + mode while we wait for the person to
-  // map its columns.
-  const [pendingMerge, setPendingMerge] = useState(null) // { headers, dataRows } | null
+  // Multi-select state. Keyed by originalIndex (same identity used
+  // everywhere else in this component), so selection survives re-sorting
+  // and stays correctly attached to a row even if the sort order shifts
+  // underneath it (e.g. a selected row gets edited and its status changes).
+  //
+  // Row checkboxes only render once selection mode is switched on via the
+  // header checkbox — keeps the default table clean (no checkbox column
+  // eating into Name/Phone/Status alignment) until the person actually
+  // wants to bulk-remove something.
+  const [selectionModeActive, setSelectionModeActive] = useState(false)
+  const [selected, setSelected] = useState(() => new Set())
+  const [confirmingBulkRemove, setConfirmingBulkRemove] = useState(false)
 
-  // Tracks whether we're still waiting on the WhatsApp login code to be
-  // entered on the person's phone before the actual sending/progress
-  // polling should start.
-  const [awaitingLogin, setAwaitingLogin] = useState(false)
-  const pendingCampaignIdRef = useRef(null)
+  // Undo state, shared by single-row and bulk remove. Removed rows aren't
+  // deleted from `contacts` right away — they're held here for 5 seconds
+  // with their original position, so "Undo" can splice them back in
+  // exactly where they were. If the timer runs out, or another remove
+  // happens first, the pending batch is just abandoned (already gone
+  // from `contacts`, nothing left to do).
+  //   pendingUndo: { rows: [{ row, originalIndex }], count } | null
+  const [pendingUndo, setPendingUndo] = useState(null)
+  const undoTimerRef = useRef(null)
 
-  const pollIntervalRef = useRef(null)
+  // Tracks the most recent array *this component* handed up to the parent
+  // via commitContacts. When dataRows comes back down matching this, it's
+  // just React re-rendering with the parent's copy of our own edit — not a
+  // genuinely new file — so the reset effect below should skip it.
+  const lastEmittedRef = useRef(null)
 
-  function handleAuthSuccess(token, user) {
-    setAuthToken(token)
-    setUsername(user)
-  }
+  useEffect(() => {
+    return () => {
+      if (undoTimerRef.current) clearTimeout(undoTimerRef.current)
+    }
+  }, [])
 
-  function handleLogout() {
-    logoutUser()
-    setAuthToken(null)
-    setUsername(null)
-  }
-
-  function resetDownstreamState() {
-    setMessageData(null)
-    setSettings(null)
-    setSentCount(0)
-    setFailedCount(0)
-    setError('')
-    setEditingMapping(false)
-    setEditingMessage(false)
-    setEditingSettings(false)
-  }
-
-  function handleContactsLoaded(parsed, { mode }) {
-    if (mode === 'replace' || !csvData) {
-      setCsvData(parsed)
-      setCurrentContacts(parsed.dataRows)
-      setMapping(null)
-      resetDownstreamState()
+  useEffect(() => {
+    if (dataRows === lastEmittedRef.current) {
+      // This is our own edit/remove/undo echoing back down as a prop —
+      // not a new CSV upload or merge. Just sync contacts, don't touch
+      // selection/undo/editing state (previously this reset ALL of that
+      // on every single edit, which made undo disappear immediately and
+      // selection mode reset unexpectedly).
+      setContacts(dataRows)
       return
     }
 
-    // mode === 'merge'
-    const headersMatch =
-      parsed.headers.length === csvData.headers.length &&
-      parsed.headers.every((h, i) => h === csvData.headers[i])
+    setContacts(dataRows)
+    setEditingIndex(null)
+    setPickingCountryFor(null)
+    setSelectionModeActive(false)
+    setSelected(new Set())
+    setConfirmingBulkRemove(false)
+    if (undoTimerRef.current) clearTimeout(undoTimerRef.current)
+    setPendingUndo(null)
+  }, [dataRows])
 
-    if (headersMatch) {
-      // Same column shape — just append directly, existing mapping still applies.
-      setCurrentContacts((prev) => [...(prev || []), ...parsed.dataRows])
-      resetDownstreamState()
-    } else {
-      // Different columns — hold onto the new file and ask the person to
-      // map ITS columns before we can convert its rows into the existing shape.
-      setPendingMerge(parsed)
-    }
+  // Classify every row once per render, keeping the original index attached
+  // so edits/removals still target the right underlying row after sorting.
+  const classified = useMemo(() => {
+    return contacts.map((row, originalIndex) => ({
+      row,
+      originalIndex,
+      classification: classifyPhone(row[phoneIndex]),
+    }))
+  }, [contacts, phoneIndex])
+
+  const sorted = useMemo(() => {
+    return [...classified].sort((a, b) => {
+      const rankDiff = STATUS_RANK[a.classification.status] - STATUS_RANK[b.classification.status]
+      if (rankDiff !== 0) return rankDiff
+      return a.originalIndex - b.originalIndex
+    })
+  }, [classified])
+
+  function commitContacts(updated) {
+    lastEmittedRef.current = updated
+    setContacts(updated)
+    onContactsUpdated(updated)
   }
 
-  function handleMergeMappingDone(mergeMapping) {
-    if (!pendingMerge || !csvData || !mapping) return
+  // Removes a single row, then holds it for 5s so it can be undone.
+  function handleRemove(originalIndex) {
+    const removedRow = contacts[originalIndex]
+    const updated = contacts.filter((_, i) => i !== originalIndex)
 
-    const newNameIdx = pendingMerge.headers.indexOf(mergeMapping.nameCol)
-    const newPhoneIdx = pendingMerge.headers.indexOf(mergeMapping.phoneCol)
-    const existingNameIdx = csvData.headers.indexOf(mapping.nameCol)
-    const existingPhoneIdx = csvData.headers.indexOf(mapping.phoneCol)
-
-    // Build new rows shaped to match the EXISTING header layout, so the
-    // current mapping (which points at existing header positions) still
-    // works for every row, old and newly merged alike.
-    const maxIndex = Math.max(existingNameIdx, existingPhoneIdx)
-    const converted = pendingMerge.dataRows.map((row) => {
-      const newRow = new Array(maxIndex + 1).fill('')
-      newRow[existingNameIdx] = row[newNameIdx] ?? ''
-      newRow[existingPhoneIdx] = row[newPhoneIdx] ?? ''
-      return newRow
+    commitContacts(updated)
+    if (editingIndex === originalIndex) setEditingIndex(null)
+    if (pickingCountryFor === originalIndex) setPickingCountryFor(null)
+    setSelected((prev) => {
+      if (!prev.has(originalIndex)) return prev
+      const next = new Set(prev)
+      next.delete(originalIndex)
+      return next
     })
 
-    setCurrentContacts((prev) => [...(prev || []), ...converted])
-    setPendingMerge(null)
-    resetDownstreamState()
+    startUndoWindow([{ row: removedRow, originalIndex }])
   }
 
-  function handleCancelMerge() {
-    setPendingMerge(null)
+  // Shared by single-row and bulk remove. `removedEntries` is the list of
+  // { row, originalIndex } pairs just taken out of `contacts`, in their
+  // original ascending index order — that order matters for undo, since
+  // re-inserting them one at a time by ascending index puts everything
+  // back exactly where it was, regardless of how many rows were removed
+  // at once.
+  function startUndoWindow(removedEntries) {
+    if (undoTimerRef.current) clearTimeout(undoTimerRef.current)
+
+    setPendingUndo({ rows: removedEntries, count: removedEntries.length })
+
+    undoTimerRef.current = setTimeout(() => {
+      setPendingUndo(null)
+      undoTimerRef.current = null
+    }, 5000)
   }
 
-  function handleMappingDone(mappingResult) {
-    setMapping(mappingResult)
-    setEditingMapping(false)
-  }
-
-  function handleContactsUpdated(updatedContacts) {
-    setCurrentContacts(updatedContacts)
-  }
-
-  function handleMessageReady(data) {
-    setMessageData(data)
-    setEditingMessage(false)
-  }
-
-  function handleSettingsReady(data) {
-    setSettings(data)
-    setEditingSettings(false)
-  }
-
-  function startProgressPolling(campaignId) {
-    pollIntervalRef.current = setInterval(async () => {
-      try {
-        const status = await getCampaignStatus(campaignId)
-        const sent = status.contacts.filter(c => c.status === 'sent').length
-        const failed = status.contacts.filter(c => c.status === 'failed').length
-        setSentCount(sent)
-        setFailedCount(failed)
-
-        if (sent + failed >= status.contacts.length) {
-          clearInterval(pollIntervalRef.current)
-          setSending(false)
-        }
-      } catch (err) {
-        console.error('Polling error:', err)
-      }
-    }, 3000)
-  }
-
-  async function handleStartSend() {
-    const nameIndex = csvData.headers.indexOf(mapping.nameCol)
-    const phoneIndex = csvData.headers.indexOf(mapping.phoneCol)
-
-    // Refuse to submit while any contact still has an invalid phone number,
-    // instead of quietly sending a smaller campaign than the UI showed.
-    // The backend re-validates too, but the user should decide what to do
-    // with invalid rows (fix or remove them) rather than have them vanish.
-    const invalidContacts = currentContacts.filter(row => !isValidPhone(row[phoneIndex]))
-    if (invalidContacts.length > 0) {
-      setError(
-        `${invalidContacts.length} contact(s) have an invalid phone number. ` +
-        `Remove or fix them in the contact list above before sending.`
-      )
-      return
+  function handleUndoRemove() {
+    if (!pendingUndo) return
+    if (undoTimerRef.current) {
+      clearTimeout(undoTimerRef.current)
+      undoTimerRef.current = null
     }
 
-    if (settings.mode === 'instant') {
-      const confirmed = window.confirm(
-        'You chose "Send all at once". This carries a real risk of the WhatsApp number getting banned. Continue?'
-      )
-      if (!confirmed) return
+    // Re-insert removed rows back at their original indices. Since
+    // `contacts` has shrunk since removal, indices are restored by
+    // inserting in ascending order — each insertion shifts everything
+    // after it by one, which is exactly what's needed to line the next
+    // one up correctly too.
+    let restored = [...contacts]
+    for (const { row, originalIndex } of pendingUndo.rows) {
+      const insertAt = Math.min(originalIndex, restored.length)
+      restored = [...restored.slice(0, insertAt), row, ...restored.slice(insertAt)]
     }
 
-    setError('')
-    setSending(true)
-    setSentCount(0)
-    setFailedCount(0)
+    commitContacts(restored)
+    setPendingUndo(null)
+  }
 
-    try {
-      const contactsPayload = currentContacts.map(row => ({
-        name: row[nameIndex],
-        phone: row[phoneIndex],
-      }))
+  function handleStartEdit(originalIndex, row) {
+    setEditingIndex(originalIndex)
+    setPickingCountryFor(null)
+    setDraftName(row[nameIndex])
+    setDraftPhone(row[phoneIndex])
+  }
 
-      const campaign = await createCampaign({
-        name: `Campaign ${new Date().toLocaleString()}`,
-        messageText: messageData.message,
-        sendMode: settings.mode,
-        contacts: contactsPayload,
-        mediaFiles: messageData.mediaFiles || [],
+  function handleCancelEdit() {
+    setEditingIndex(null)
+  }
+
+  function handleSaveEdit(originalIndex) {
+    const updated = contacts.map((row, i) => {
+      if (i !== originalIndex) return row
+      const newRow = [...row]
+      newRow[nameIndex] = draftName
+      newRow[phoneIndex] = draftPhone
+      return newRow
+    })
+    commitContacts(updated)
+    setEditingIndex(null)
+  }
+
+  function handleCountrySelected(originalIndex, country) {
+    const row = contacts[originalIndex]
+    const result = resolveWithCountry(row[phoneIndex], country.code)
+
+    if (result.status === 'valid') {
+      const updated = contacts.map((r, i) => {
+        if (i !== originalIndex) return r
+        const newRow = [...r]
+        newRow[phoneIndex] = result.e164
+        return newRow
       })
+      commitContacts(updated)
+    }
+    // If it still doesn't resolve to valid, leave the row as-is — it'll
+    // fall through to "invalid" on the next render, which at least gives
+    // clear feedback rather than silently discarding their country choice.
+    setPickingCountryFor(null)
+  }
 
-      // This throws with the backend's actual error message (e.g. "Add
-      // your WhatsApp phone number in settings before sending") rather
-      // than a generic failure, so the person knows exactly what to fix.
-      await startSending(campaign.id)
+  // --- Multi-select handlers ---
 
-      // Instead of polling progress immediately, wait for the login code
-      // to be entered first. LoginCode will call handleLoginReady() once
-      // WhatsApp is logged in, or handleLoginFailed() if it gives up.
-      pendingCampaignIdRef.current = campaign.id
-      setAwaitingLogin(true)
+  function toggleRowSelected(originalIndex) {
+    setSelected((prev) => {
+      const next = new Set(prev)
+      if (next.has(originalIndex)) {
+        next.delete(originalIndex)
+      } else {
+        next.add(originalIndex)
+      }
+      return next
+    })
+  }
 
-    } catch (err) {
-      console.error(err)
-      setError(err.message || 'Something went wrong starting the send. Check that the backend server is running.')
-      setSending(false)
+  const allSelected = contacts.length > 0 && selected.size === contacts.length
+  const someSelected = selected.size > 0 && !allSelected
+
+  // The header checkbox does double duty: checking it turns on selection
+  // mode (revealing per-row checkboxes) AND selects everything, in one
+  // click — the common case is "I want to bulk-remove most of these."
+  // Unchecking it exits selection mode entirely, hiding the row checkboxes
+  // again rather than leaving an empty checkbox column behind.
+  function toggleSelectAll() {
+    if (selectionModeActive) {
+      setSelectionModeActive(false)
+      setSelected(new Set())
+    } else {
+      setSelectionModeActive(true)
+      setSelected(new Set(contacts.map((_, i) => i)))
     }
   }
 
-  function handleLoginReady() {
-    setAwaitingLogin(false)
-    if (pendingCampaignIdRef.current) {
-      startProgressPolling(pendingCampaignIdRef.current)
-    }
+  function handleBulkRemoveClick() {
+    setConfirmingBulkRemove(true)
   }
 
-  function handleLoginFailed() {
-    setAwaitingLogin(false)
-    setSending(false)
-    setError('WhatsApp login timed out or failed. Please try again.')
+  function handleConfirmBulkRemove() {
+    const removedEntries = contacts
+      .map((row, i) => ({ row, originalIndex: i }))
+      .filter(({ originalIndex }) => selected.has(originalIndex))
+    const updated = contacts.filter((_, i) => !selected.has(i))
+
+    commitContacts(updated)
+    if (editingIndex !== null && selected.has(editingIndex)) setEditingIndex(null)
+    if (pickingCountryFor !== null && selected.has(pickingCountryFor)) setPickingCountryFor(null)
+    setSelected(new Set())
+    setSelectionModeActive(false)
+    setConfirmingBulkRemove(false)
+
+    startUndoWindow(removedEntries)
   }
 
-  // --- GATE: show login/register screen if not authenticated ---
-  if (!authToken) {
-    return <Auth onAuthSuccess={handleAuthSuccess} />
+  function handleCancelBulkRemove() {
+    setConfirmingBulkRemove(false)
   }
+
+  const validCount = classified.filter((c) => c.classification.status === 'valid').length
+  const needsCountryCount = classified.filter((c) => c.classification.status === 'needs-country').length
+  const invalidCount = classified.filter((c) => c.classification.status === 'invalid').length
+  const draftClassification = classifyPhone(draftPhone)
+  const draftValid = draftClassification.status === 'valid'
 
   return (
-    <div style={{ maxWidth: '760px', margin: '0 auto', padding: 'var(--space-xl) var(--space-lg)' }}>
-      <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 'var(--space-lg)', gap: 'var(--space-md)', flexWrap: 'wrap' }}>
-        <div>
-          <h1 style={{ marginBottom: '2px' }}>WhatsApp Bulk Sender</h1>
-          <p style={{ fontSize: '13px' }}>Send at your own pace.</p>
+    <div className="bs-card" style={{ marginTop: 'var(--space-lg)' }}>
+      <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 'var(--space-md)', flexWrap: 'wrap', gap: '8px' }}>
+        <h2 style={{ margin: 0 }}>{contacts.length} contacts loaded</h2>
+        <div style={{ display: 'flex', gap: '8px' }}>
+          <span className="bs-badge bs-badge-success">{validCount} valid</span>
+          {needsCountryCount > 0 && (
+            <span className="bs-badge bs-badge-muted">{needsCountryCount} need country</span>
+          )}
+          {invalidCount > 0 && (
+            <span className="bs-badge bs-badge-danger">{invalidCount} invalid</span>
+          )}
         </div>
-        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 'var(--space-sm)' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-md)' }}>
-            <span style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>{username}</span>
-            <button onClick={handleLogout} className="bs-btn bs-btn-secondary" style={{ padding: '6px 14px', fontSize: '13px' }}>
-              Log out
-            </button>
-          </div>
-          <WhatsAppNumberSettings />
-        </div>
-      </header>
+      </div>
 
-      <CsvUpload onContactsLoaded={handleContactsLoaded} hasExistingContacts={!!currentContacts && currentContacts.length > 0} />
-
-      {pendingMerge && (
-        <div className="bs-card" style={{ marginTop: 'var(--space-lg)' }}>
-          <h2>Map the new file's columns</h2>
-          <p style={{ marginBottom: 'var(--space-md)' }}>
-            This file's columns don't match your existing contacts. Tell us which column holds the name and phone number so we can merge it in.
-          </p>
-          <ColumnMapping headers={pendingMerge.headers} onMappingDone={handleMergeMappingDone} />
-          <button onClick={handleCancelMerge} className="bs-btn bs-btn-secondary" style={{ marginTop: 'var(--space-sm)' }}>
-            Cancel merge
+      {/* Undo banner — shown for 5s after any remove (single or bulk).
+          Placed above the bulk action bar since the two can't really
+          overlap in practice (removing clears selection first). */}
+      {pendingUndo && (
+        <div
+          className="bs-card"
+          style={{
+            marginBottom: 'var(--space-md)',
+            background: 'var(--bg-card-muted)',
+            borderStyle: 'solid',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            flexWrap: 'wrap',
+            gap: '8px',
+            padding: 'var(--space-md)',
+          }}
+        >
+          <span style={{ fontSize: '13px', color: 'var(--text-primary)' }}>
+            Removed {pendingUndo.count} contact{pendingUndo.count === 1 ? '' : 's'}
+          </span>
+          <button onClick={handleUndoRemove} className="bs-btn bs-btn-secondary" style={{ padding: '6px 14px', fontSize: '13px' }}>
+            Undo
           </button>
         </div>
       )}
 
-      {csvData && (!mapping || editingMapping) && !pendingMerge && (
-        <ColumnMapping headers={csvData.headers} onMappingDone={handleMappingDone} />
-      )}
-
-      {mapping && !editingMapping && !pendingMerge && (
-        <div>
-          <ContactList
-            headers={csvData.headers}
-            dataRows={currentContacts}
-            mapping={mapping}
-            onContactsUpdated={handleContactsUpdated}
-          />
-          <button onClick={() => setEditingMapping(true)} className="bs-btn bs-btn-secondary" style={{ marginTop: 'var(--space-sm)' }}>
-            Edit column mapping
-          </button>
+      {/* Bulk action bar — shown whenever selection mode is on, so the
+          person always has a visible way to exit it, whether or not
+          anything is currently checked. */}
+      {selectionModeActive && (
+        <div
+          className="bs-card"
+          style={{
+            marginBottom: 'var(--space-md)',
+            background: 'var(--bg-card-muted)',
+            borderStyle: 'solid',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            flexWrap: 'wrap',
+            gap: '8px',
+            padding: 'var(--space-md)',
+          }}
+        >
+          {!confirmingBulkRemove ? (
+            <>
+              <span style={{ fontSize: '13px', color: 'var(--text-primary)' }}>
+                {selected.size} selected
+              </span>
+              <div style={{ display: 'flex', gap: '8px' }}>
+                <button
+                  onClick={handleBulkRemoveClick}
+                  disabled={selected.size === 0}
+                  className="bs-btn bs-btn-danger"
+                  style={{ padding: '6px 14px', fontSize: '13px' }}
+                >
+                  Remove selected
+                </button>
+                <button
+                  onClick={() => { setSelectionModeActive(false); setSelected(new Set()) }}
+                  className="bs-btn bs-btn-secondary"
+                  style={{ padding: '6px 14px', fontSize: '13px' }}
+                >
+                  Done
+                </button>
+              </div>
+            </>
+          ) : (
+            <>
+              <span style={{ fontSize: '13px', color: 'var(--danger)' }}>
+                Remove {selected.size} contact{selected.size === 1 ? '' : 's'}? This can't be undone.
+              </span>
+              <div style={{ display: 'flex', gap: '8px' }}>
+                <button onClick={handleConfirmBulkRemove} className="bs-btn bs-btn-danger" style={{ padding: '6px 14px', fontSize: '13px' }}>
+                  Yes, remove
+                </button>
+                <button onClick={handleCancelBulkRemove} className="bs-btn bs-btn-secondary" style={{ padding: '6px 14px', fontSize: '13px' }}>
+                  Cancel
+                </button>
+              </div>
+            </>
+          )}
         </div>
       )}
 
-      {mapping && (!messageData || editingMessage) && (
-        <MessageComposer onMessageReady={handleMessageReady} />
-      )}
+      <div style={{ maxHeight: '460px', overflowY: 'auto', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)' }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px' }}>
+          <thead>
+            <tr style={{ background: 'var(--bg-card-muted)', position: 'sticky', top: 0 }}>
+              <th style={{ padding: '10px 12px', width: '1%', textAlign: 'center' }}>
+                <input
+                  type="checkbox"
+                  checked={selectionModeActive}
+                  ref={(el) => { if (el) el.indeterminate = selectionModeActive && someSelected }}
+                  onChange={toggleSelectAll}
+                  aria-label={selectionModeActive ? 'Exit selection mode' : 'Select all contacts'}
+                />
+              </th>
+              <th style={{ textAlign: 'left', padding: '10px 12px', color: 'var(--text-secondary)', fontWeight: 500 }}>Name</th>
+              <th style={{ textAlign: 'left', padding: '10px 12px', color: 'var(--text-secondary)', fontWeight: 500 }}>Phone</th>
+              <th style={{ textAlign: 'left', padding: '10px 12px', color: 'var(--text-secondary)', fontWeight: 500 }}>Status</th>
+              <th style={{ padding: '10px 12px' }}></th>
+            </tr>
+          </thead>
+          <tbody>
+            {sorted.map(({ row, originalIndex, classification }) => {
+              const { status } = classification
+              const isEditing = editingIndex === originalIndex
+              const isPickingCountry = pickingCountryFor === originalIndex
+              const isSelected = selected.has(originalIndex)
 
-      {messageData && !editingMessage && (
-        <div className="bs-card" style={{ marginTop: 'var(--space-lg)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <p style={{ fontSize: '13px', color: 'var(--text-primary)' }}>
-            Message ready: "{messageData.message.slice(0, 60)}{messageData.message.length > 60 ? '…' : ''}"
-          </p>
-          <button
-            onClick={() => { setEditingMessage(true); setSentCount(0); setFailedCount(0); }}
-            className="bs-btn bs-btn-secondary"
-            style={{ padding: '6px 14px', fontSize: '13px' }}
-          >
-            Edit message
-          </button>
-        </div>
-      )}
+              const badgeClass =
+                status === 'valid' ? 'bs-badge bs-badge-success' :
+                status === 'needs-country' ? 'bs-badge bs-badge-muted' :
+                'bs-badge bs-badge-danger'
+              const badgeLabel =
+                status === 'valid' ? 'Valid' :
+                status === 'needs-country' ? 'Needs country' :
+                'Invalid'
 
-      {messageData && (!settings || editingSettings) && (
-        <SendSettings onSettingsReady={handleSettingsReady} />
-      )}
+              return (
+                <Fragment key={originalIndex}>
+                  <tr
+                    style={{
+                      borderTop: '1px solid var(--border)',
+                      background: isSelected ? 'var(--accent-bg)' : undefined,
+                    }}
+                  >
+                    <td style={{ padding: '10px 12px', textAlign: 'center' }}>
+                      {selectionModeActive && (
+                        <input
+                          type="checkbox"
+                          checked={isSelected}
+                          onChange={() => toggleRowSelected(originalIndex)}
+                          aria-label={`Select ${row[nameIndex] || 'contact'}`}
+                        />
+                      )}
+                    </td>
+                    <td style={{ padding: '10px 12px', textAlign: 'left' }}>{row[nameIndex]}</td>
+                    <td style={{ padding: '10px 12px', textAlign: 'left' }}>{row[phoneIndex]}</td>
+                    <td style={{ padding: '10px 12px', textAlign: 'left' }}>
+                      <span className={badgeClass}>{badgeLabel}</span>
+                    </td>
+                    <td style={{ padding: '10px 12px', textAlign: 'right', whiteSpace: 'nowrap' }}>
+                      {status === 'needs-country' && !isPickingCountry && (
+                        <button
+                          onClick={() => { setPickingCountryFor(originalIndex); setEditingIndex(null) }}
+                          className="bs-btn bs-btn-secondary"
+                          style={{ padding: '4px 10px', fontSize: '12px', marginRight: '6px' }}
+                        >
+                          Pick country
+                        </button>
+                      )}
+                      {status === 'invalid' && !isEditing && (
+                        <button
+                          onClick={() => handleStartEdit(originalIndex, row)}
+                          className="bs-btn bs-btn-secondary"
+                          style={{ padding: '4px 10px', fontSize: '12px', marginRight: '6px' }}
+                        >
+                          Edit
+                        </button>
+                      )}
+                      <button onClick={() => handleRemove(originalIndex)} className="bs-btn bs-btn-danger" style={{ padding: '4px 10px', fontSize: '12px' }}>
+                        Remove
+                      </button>
+                    </td>
+                  </tr>
 
-      {settings && !editingSettings && (
-        <div className="bs-card" style={{ marginTop: 'var(--space-lg)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <p style={{ fontSize: '13px', color: 'var(--text-primary)' }}>
-            Send mode: {settings.mode === 'delay' ? 'With delay (safer)' : 'All at once (risky)'}
-          </p>
-          <button
-            onClick={() => { setEditingSettings(true); setSentCount(0); setFailedCount(0); }}
-            className="bs-btn bs-btn-secondary"
-            style={{ padding: '6px 14px', fontSize: '13px' }}
-          >
-            Edit settings
-          </button>
-        </div>
-      )}
+                  {isPickingCountry && (
+                    <tr style={{ borderTop: '1px solid var(--border)', background: 'var(--bg-card-muted)' }}>
+                      <td colSpan={5} style={{ padding: 'var(--space-md)' }}>
+                        <p style={{ fontSize: '13px', marginBottom: 'var(--space-sm)', color: 'var(--text-primary)' }}>
+                          "{row[phoneIndex]}" has no country code — which country is this number from?
+                        </p>
+                        <div style={{ maxWidth: '320px' }}>
+                          <CountryPicker
+                            onSelect={(country) => handleCountrySelected(originalIndex, country)}
+                            onCancel={() => setPickingCountryFor(null)}
+                          />
+                        </div>
+                      </td>
+                    </tr>
+                  )}
 
-      {messageData && settings && !sending && sentCount === 0 && failedCount === 0 && !editingMessage && !editingMapping && !editingSettings && (
-        <button onClick={handleStartSend} className="bs-btn bs-btn-primary" style={{ marginTop: 'var(--space-lg)', padding: '12px 24px' }}>
-          Start send
-        </button>
-      )}
-
-      {error && (
-        <p style={{ color: 'var(--danger)', marginTop: 'var(--space-md)', fontSize: '13px' }}>{error}</p>
-      )}
-
-      {awaitingLogin && <LoginCode onReady={handleLoginReady} onFailed={handleLoginFailed} />}
-
-      {(sending || sentCount > 0 || failedCount > 0) && (
-        <SendProgress total={currentContacts.length} sent={sentCount} failed={failedCount} />
-      )}
+                  {isEditing && (
+                    <tr style={{ borderTop: '1px solid var(--border)', background: 'var(--bg-card-muted)' }}>
+                      <td colSpan={5} style={{ padding: 'var(--space-md)' }}>
+                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr auto', gap: 'var(--space-md)', alignItems: 'end' }}>
+                          <div>
+                            <label className="bs-label" htmlFor={`edit-name-${originalIndex}`}>Name</label>
+                            <input
+                              id={`edit-name-${originalIndex}`}
+                              className="bs-input"
+                              value={draftName}
+                              onChange={(e) => setDraftName(e.target.value)}
+                            />
+                          </div>
+                          <div>
+                            <label className="bs-label" htmlFor={`edit-phone-${originalIndex}`}>Phone</label>
+                            <input
+                              id={`edit-phone-${originalIndex}`}
+                              className="bs-input"
+                              value={draftPhone}
+                              onChange={(e) => setDraftPhone(e.target.value)}
+                              placeholder="+2348161234765"
+                              style={{
+                                borderColor: draftPhone ? (draftValid ? 'var(--accent)' : 'var(--danger)') : 'var(--border)',
+                              }}
+                            />
+                            <p style={{
+                              fontSize: '12px',
+                              marginTop: '4px',
+                              color: draftPhone ? (draftValid ? 'var(--accent)' : 'var(--danger)') : 'var(--text-muted)',
+                            }}>
+                              {!draftPhone
+                                ? 'Enter a phone number'
+                                : draftClassification.status === 'valid'
+                                  ? 'Looks good'
+                                  : draftClassification.status === 'needs-country'
+                                    ? 'Add a + and country code, or save and pick a country from the list'
+                                    : 'Still not a valid phone number'}
+                            </p>
+                          </div>
+                          <div style={{ display: 'flex', gap: '8px', paddingBottom: '2px' }}>
+                            <button
+                              onClick={() => handleSaveEdit(originalIndex)}
+                              className="bs-btn bs-btn-primary"
+                              style={{ padding: '10px 16px', fontSize: '13px' }}
+                            >
+                              Save
+                            </button>
+                            <button
+                              onClick={handleCancelEdit}
+                              className="bs-btn bs-btn-secondary"
+                              style={{ padding: '10px 16px', fontSize: '13px' }}
+                            >
+                              Cancel
+                            </button>
+                          </div>
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                </Fragment>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
     </div>
   )
 }
 
-export default App
+export default ContactList

@@ -31,12 +31,19 @@ function LoginCode({ onReady, onFailed }) {
   const [code, setCode] = useState(null)
   const [everSawCode, setEverSawCode] = useState(false)
   const [slowNetwork, setSlowNetwork] = useState(false)
+  // Set if the backend's automation script failed to generate a code at
+  // all (e.g. a selector didn't match before the page finished loading).
+  // Previously this was console/screenshot-only on the backend, so this
+  // overlay just stayed blank with no explanation while the script kept
+  // waiting in the background — now we surface it directly.
+  const [codeError, setCodeError] = useState(null)
 
   useEffect(() => {
     const interval = setInterval(async () => {
       try {
         const token = localStorage.getItem('authToken')
-        const res = await fetch('http://127.0.0.1:8000/api/login-status/', {
+        const base = import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8000/api'
+        const res = await fetch(`${base}/login-status/`, {
           headers: token ? { Authorization: `Token ${token}` } : {},
         })
         const data = await res.json()
@@ -46,6 +53,10 @@ function LoginCode({ onReady, onFailed }) {
           setCode(null)
           onFailed()
           return
+        }
+
+        if (data.login_code_error) {
+          setCodeError(data.login_code_error)
         }
 
         if (data.code_ready) {
@@ -66,7 +77,7 @@ function LoginCode({ onReady, onFailed }) {
     return () => clearInterval(interval)
   }, [everSawCode, onReady, onFailed])
 
-  if (!code) return null
+  if (!code && !codeError) return null
 
   return (
     <div
@@ -84,31 +95,55 @@ function LoginCode({ onReady, onFailed }) {
       }}
     >
       <div className="bs-card" style={{ textAlign: 'center', maxWidth: '420px' }}>
-        <h2>Enter this code on your phone</h2>
-        <p style={{ marginBottom: 'var(--space-md)' }}>
-          Open WhatsApp on your phone → Settings → Linked devices → Link a device → Link with phone number instead — then type the code below.
-        </p>
-        <div
-          style={{
-            display: 'inline-block',
-            fontFamily: 'var(--font-display)',
-            fontSize: '28px',
-            fontWeight: 500,
-            letterSpacing: '4px',
-            padding: '16px 28px',
-            border: '1px solid var(--border)',
-            borderRadius: 'var(--radius-md)',
-            background: 'var(--bg-card-muted)',
-            color: 'var(--text-primary)',
-          }}
-        >
-          {code}
-        </div>
+        {code ? (
+          <>
+            <h2>Enter this code on your phone</h2>
+            <p style={{ marginBottom: 'var(--space-md)' }}>
+              Open WhatsApp on your phone → Settings → Linked devices → Link a device → Link with phone number instead — then type the code below.
+            </p>
+            <div
+              style={{
+                display: 'inline-block',
+                fontFamily: 'var(--font-display)',
+                fontSize: '28px',
+                fontWeight: 500,
+                letterSpacing: '4px',
+                padding: '16px 28px',
+                border: '1px solid var(--border)',
+                borderRadius: 'var(--radius-md)',
+                background: 'var(--bg-card-muted)',
+                color: 'var(--text-primary)',
+              }}
+            >
+              {code}
+            </div>
 
-        {slowNetwork && (
-          <p style={{ marginTop: 'var(--space-md)', color: 'var(--danger)', fontWeight: 500, fontSize: '13px' }}>
-            This is taking a while — check your connection. Still waiting.
-          </p>
+            {slowNetwork && (
+              <p style={{ marginTop: 'var(--space-md)', color: 'var(--danger)', fontWeight: 500, fontSize: '13px' }}>
+                This is taking a while — check your connection. Still waiting.
+              </p>
+            )}
+          </>
+        ) : (
+          <>
+            <h2>Couldn't generate a login code</h2>
+            <p style={{ marginBottom: 'var(--space-md)' }}>
+              Something went wrong starting WhatsApp login. We're still waiting in case it recovers, but if this
+              persists, try starting the send again.
+            </p>
+            <p style={{
+              fontSize: '12px',
+              fontFamily: 'var(--font-display)',
+              color: 'var(--danger)',
+              background: 'var(--danger-bg)',
+              padding: '10px 12px',
+              borderRadius: 'var(--radius-sm)',
+              textAlign: 'left',
+              wordBreak: 'break-word',
+            }}>
+              {codeError}
+            </p>
+          </>
         )}
       </div>
     </div>

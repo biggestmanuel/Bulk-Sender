@@ -10,6 +10,10 @@ function ColumnMapping({ headers, onMappingDone }) {
       setError('Choose both a name column and a phone column.')
       return
     }
+    if (nameCol === phoneCol) {
+      setError('Name and phone must be different columns.')
+      return
+    }
     setError('')
     onMappingDone({ nameCol, phoneCol })
   }
