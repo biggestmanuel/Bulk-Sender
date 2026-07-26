@@ -11,6 +11,12 @@ import { useState, useEffect } from 'react'
 // phone's WhatsApp app (Linked Devices → Link a device → Link with phone
 // number instead), not the other way around.
 //
+// Rendered as a full-screen blurred overlay so the code is the only thing
+// in focus while it's active — the rest of the app (contact list, send
+// button, etc.) sits blurred behind it until login succeeds and this
+// unmounts, at which point everything underneath is back to normal and
+// progress polling picks up.
+//
 // NOTE: sends the auth token with every poll. Login-code state is
 // per-user on the backend, so without the token the server wouldn't know
 // whose code to return — this is what makes it safe for two people to
@@ -51,33 +57,48 @@ function LoginCode({ onReady }) {
   if (!code) return null
 
   return (
-    <div className="bs-card" style={{ marginTop: 'var(--space-lg)', textAlign: 'center' }}>
-      <h2>Enter this code on your phone</h2>
-      <p style={{ marginBottom: 'var(--space-md)' }}>
-        Open WhatsApp on your phone → Settings → Linked devices → Link a device → Link with phone number instead — then type the code below.
-      </p>
-      <div
-        style={{
-          display: 'inline-block',
-          fontFamily: 'var(--font-display)',
-          fontSize: '28px',
-          fontWeight: 500,
-          letterSpacing: '4px',
-          padding: '16px 28px',
-          border: '1px solid var(--border)',
-          borderRadius: 'var(--radius-md)',
-          background: 'var(--bg-card-muted)',
-          color: 'var(--text-primary)',
-        }}
-      >
-        {code}
-      </div>
-
-      {slowNetwork && (
-        <p style={{ marginTop: 'var(--space-md)', color: 'var(--danger)', fontWeight: 500, fontSize: '13px' }}>
-          This is taking a while — check your connection. Still waiting.
+    <div
+      style={{
+        position: 'fixed',
+        inset: 0,
+        zIndex: 1000,
+        background: 'rgba(245, 243, 238, 0.55)',
+        backdropFilter: 'blur(6px)',
+        WebkitBackdropFilter: 'blur(6px)',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        padding: 'var(--space-lg)',
+      }}
+    >
+      <div className="bs-card" style={{ textAlign: 'center', maxWidth: '420px' }}>
+        <h2>Enter this code on your phone</h2>
+        <p style={{ marginBottom: 'var(--space-md)' }}>
+          Open WhatsApp on your phone → Settings → Linked devices → Link a device → Link with phone number instead — then type the code below.
         </p>
-      )}
+        <div
+          style={{
+            display: 'inline-block',
+            fontFamily: 'var(--font-display)',
+            fontSize: '28px',
+            fontWeight: 500,
+            letterSpacing: '4px',
+            padding: '16px 28px',
+            border: '1px solid var(--border)',
+            borderRadius: 'var(--radius-md)',
+            background: 'var(--bg-card-muted)',
+            color: 'var(--text-primary)',
+          }}
+        >
+          {code}
+        </div>
+
+        {slowNetwork && (
+          <p style={{ marginTop: 'var(--space-md)', color: 'var(--danger)', fontWeight: 500, fontSize: '13px' }}>
+            This is taking a while — check your connection. Still waiting.
+          </p>
+        )}
+      </div>
     </div>
   )
 }
