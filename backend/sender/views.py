@@ -27,6 +27,14 @@ def _login_slow_flag_path(user_id):
     return os.path.join(django_settings.MEDIA_ROOT, f'login_slow_{user_id}.flag')
 
 
+def _login_failed_flag_path(user_id):
+    """Set when the automation script gives up entirely (page load
+    failure or the 10-minute login timeout). Without this, the frontend
+    had no way to distinguish 'still waiting' from 'gave up' once no
+    code had ever been shown, so it polled forever."""
+    return os.path.join(django_settings.MEDIA_ROOT, f'login_failed_{user_id}.flag')
+
+
 # --- AUTH ---
 
 @api_view(['POST'])
@@ -194,21 +202,26 @@ def get_login_status(request):
     """
     Frontend polls this while a campaign is starting up, to know whether
     a WhatsApp login code is currently available to enter on the phone,
-    and whether the wait has been going on long enough to warn about a
-    slow network.
+    whether the wait has been going on long enough to warn about a slow
+    network, and whether the automation script gave up entirely.
 
-    This replaces the old QR-screenshot flow: WhatsApp's "log in with
-    phone number" option returns an 8-character text code instead of a
-    QR image, which sidesteps headless-Chromium QR rendering issues
-    entirely. Login-code state is per-user (keyed off request.user.id),
-    same as the QR state was, so two people starting a send around the
-    same time still don't see or overwrite each other's code.
+    login_failed is what actually stops the frontend from polling
+    forever: without it, if a code was never captured in the first place
+    (e.g. the phone-number-login click/selectors failed), the frontend
+    had no signal to distinguish "still waiting" from "already gave up
+    10 minutes ago" and would just keep polling indefinitely.
     """
     user_id = request.user.id
     code_path = _login_code_path(user_id)
     login_slow = os.path.exists(_login_slow_flag_path(user_id))
+    login_failed = os.path.exists(_login_failed_flag_path(user_id))
 
-    response = {'code_ready': False, 'login_code': None, 'login_slow': login_slow}
+    response = {
+        'code_ready': False,
+        'login_code': None,
+        'login_slow': login_slow,
+        'login_failed': login_failed,
+    }
     if os.path.exists(code_path):
         with open(code_path) as f:
             response['login_code'] = f.read().strip()
@@ -225,6 +238,15 @@ def _mark_login_slow(user_id):
         f.write('slow')
 
 
+def _mark_login_failed(user_id):
+    """Called from the automation script when it gives up entirely —
+    page failed to load, or the 10-minute login timeout was hit."""
+    path = _login_failed_flag_path(user_id)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, 'w') as f:
+        f.write('failed')
+
+
 def run_campaign_send(campaign_id, user_id):
     """
     This runs in a background thread — pulls campaign data and starts sending.
@@ -238,6 +260,10 @@ def run_campaign_send(campaign_id, user_id):
     slow_flag = _login_slow_flag_path(user_id)
     if os.path.exists(slow_flag):
         os.remove(slow_flag)
+
+    failed_flag = _login_failed_flag_path(user_id)
+    if os.path.exists(failed_flag):
+        os.remove(failed_flag)
 
     try:
         campaign = Campaign.objects.get(id=campaign_id, owner_id=user_id)
@@ -266,7 +292,8 @@ def run_campaign_send(campaign_id, user_id):
         media_paths=media_paths,
         delay_seconds=delay,
         on_progress=update_status,
-        on_login_slow=lambda: _mark_login_slow(user_id)
+        on_login_slow=lambda: _mark_login_slow(user_id),
+        on_login_failed=lambda: _mark_login_failed(user_id)
     )
 
     if os.path.exists(slow_flag):

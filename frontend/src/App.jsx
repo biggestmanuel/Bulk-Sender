@@ -208,7 +208,7 @@ function App() {
 
       // Instead of polling progress immediately, wait for the login code
       // to be entered first. LoginCode will call handleLoginReady() once
-      // WhatsApp is logged in.
+      // WhatsApp is logged in, or handleLoginFailed() if it gives up.
       pendingCampaignIdRef.current = campaign.id
       setAwaitingLogin(true)
 
@@ -224,6 +224,12 @@ function App() {
     if (pendingCampaignIdRef.current) {
       startProgressPolling(pendingCampaignIdRef.current)
     }
+  }
+
+  function handleLoginFailed() {
+    setAwaitingLogin(false)
+    setSending(false)
+    setError('WhatsApp login timed out or failed. Please try again.')
   }
 
   // --- GATE: show login/register screen if not authenticated ---
@@ -330,7 +336,7 @@ function App() {
         <p style={{ color: 'var(--danger)', marginTop: 'var(--space-md)', fontSize: '13px' }}>{error}</p>
       )}
 
-      {awaitingLogin && <LoginCode onReady={handleLoginReady} />}
+      {awaitingLogin && <LoginCode onReady={handleLoginReady} onFailed={handleLoginFailed} />}
 
       {(sending || sentCount > 0 || failedCount > 0) && (
         <SendProgress total={currentContacts.length} sent={sentCount} failed={failedCount} />

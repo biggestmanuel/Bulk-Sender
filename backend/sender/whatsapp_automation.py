@@ -42,7 +42,7 @@ def _mark_all_failed(contacts, on_progress):
 
 
 def send_whatsapp_messages(contacts, message_text, user_id, whatsapp_number, media_paths=None,
-                            delay_seconds=20, on_progress=None, on_login_slow=None):
+                            delay_seconds=20, on_progress=None, on_login_slow=None, on_login_failed=None):
     media_paths = media_paths or []
     login_code_path = get_login_code_path(user_id)
     session_dir = get_session_dir(user_id)
@@ -76,6 +76,8 @@ def send_whatsapp_messages(contacts, message_text, user_id, whatsapp_number, med
         except Exception as e:
             print(f"Failed to load web.whatsapp.com for user {user_id}: {e}")
             _mark_all_failed(contacts, on_progress)
+            if on_login_failed:
+                on_login_failed()
             browser.close()
             return
 
@@ -88,7 +90,22 @@ def send_whatsapp_messages(contacts, message_text, user_id, whatsapp_number, med
         # from a live inspection of the actual page (not guessed), except
         # where noted.
         try:
-            page.click('text=Log in with phone number', timeout=30000)
+            login_link = page.wait_for_selector(
+                'text=Log in with phone number', state='visible', timeout=15000
+            )
+
+            # Debug: confirms the link is actually visible/positioned
+            # before we click it.
+            before_click_path = os.path.join(os.path.dirname(login_code_path), f'debug_before_click_{user_id}.png')
+            os.makedirs(os.path.dirname(before_click_path), exist_ok=True)
+            page.screenshot(path=before_click_path)
+
+            login_link.click()
+
+            # Debug: confirms whether the click above actually navigated
+            # to the phone-number screen.
+            after_click_path = os.path.join(os.path.dirname(login_code_path), f'debug_after_click_{user_id}.png')
+            page.screenshot(path=after_click_path)
 
             phone_input = page.wait_for_selector(
                 '[data-testid="phone-number-input"]', timeout=15000
@@ -150,6 +167,8 @@ def send_whatsapp_messages(contacts, message_text, user_id, whatsapp_number, med
             except Exception:
                 print("Gave up after 10 minutes total — no login detected. Aborting send.")
                 _mark_all_failed(contacts, on_progress)
+                if on_login_failed:
+                    on_login_failed()
                 browser.close()
                 return
 
