@@ -25,6 +25,12 @@ function ContactList({ headers, dataRows, mapping, onContactsUpdated }) {
   // everywhere else in this component), so selection survives re-sorting
   // and stays correctly attached to a row even if the sort order shifts
   // underneath it (e.g. a selected row gets edited and its status changes).
+  //
+  // Row checkboxes only render once selection mode is switched on via the
+  // header checkbox — keeps the default table clean (no checkbox column
+  // eating into Name/Phone/Status alignment) until the person actually
+  // wants to bulk-remove something.
+  const [selectionModeActive, setSelectionModeActive] = useState(false)
   const [selected, setSelected] = useState(() => new Set())
   const [confirmingBulkRemove, setConfirmingBulkRemove] = useState(false)
 
@@ -48,6 +54,7 @@ function ContactList({ headers, dataRows, mapping, onContactsUpdated }) {
     setContacts(dataRows)
     setEditingIndex(null)
     setPickingCountryFor(null)
+    setSelectionModeActive(false)
     setSelected(new Set())
     setConfirmingBulkRemove(false)
     if (undoTimerRef.current) clearTimeout(undoTimerRef.current)
@@ -193,10 +200,17 @@ function ContactList({ headers, dataRows, mapping, onContactsUpdated }) {
   const allSelected = contacts.length > 0 && selected.size === contacts.length
   const someSelected = selected.size > 0 && !allSelected
 
+  // The header checkbox does double duty: checking it turns on selection
+  // mode (revealing per-row checkboxes) AND selects everything, in one
+  // click — the common case is "I want to bulk-remove most of these."
+  // Unchecking it exits selection mode entirely, hiding the row checkboxes
+  // again rather than leaving an empty checkbox column behind.
   function toggleSelectAll() {
-    if (allSelected || someSelected) {
+    if (selectionModeActive) {
+      setSelectionModeActive(false)
       setSelected(new Set())
     } else {
+      setSelectionModeActive(true)
       setSelected(new Set(contacts.map((_, i) => i)))
     }
   }
@@ -215,6 +229,7 @@ function ContactList({ headers, dataRows, mapping, onContactsUpdated }) {
     if (editingIndex !== null && selected.has(editingIndex)) setEditingIndex(null)
     if (pickingCountryFor !== null && selected.has(pickingCountryFor)) setPickingCountryFor(null)
     setSelected(new Set())
+    setSelectionModeActive(false)
     setConfirmingBulkRemove(false)
 
     startUndoWindow(removedEntries)
@@ -272,9 +287,10 @@ function ContactList({ headers, dataRows, mapping, onContactsUpdated }) {
         </div>
       )}
 
-      {/* Bulk action bar — only takes up space once something is selected,
-          so the common (nothing selected) case looks identical to before. */}
-      {selected.size > 0 && (
+      {/* Bulk action bar — shown whenever selection mode is on, so the
+          person always has a visible way to exit it, whether or not
+          anything is currently checked. */}
+      {selectionModeActive && (
         <div
           className="bs-card"
           style={{
@@ -295,11 +311,20 @@ function ContactList({ headers, dataRows, mapping, onContactsUpdated }) {
                 {selected.size} selected
               </span>
               <div style={{ display: 'flex', gap: '8px' }}>
-                <button onClick={handleBulkRemoveClick} className="bs-btn bs-btn-danger" style={{ padding: '6px 14px', fontSize: '13px' }}>
+                <button
+                  onClick={handleBulkRemoveClick}
+                  disabled={selected.size === 0}
+                  className="bs-btn bs-btn-danger"
+                  style={{ padding: '6px 14px', fontSize: '13px' }}
+                >
                   Remove selected
                 </button>
-                <button onClick={() => setSelected(new Set())} className="bs-btn bs-btn-secondary" style={{ padding: '6px 14px', fontSize: '13px' }}>
-                  Clear selection
+                <button
+                  onClick={() => { setSelectionModeActive(false); setSelected(new Set()) }}
+                  className="bs-btn bs-btn-secondary"
+                  style={{ padding: '6px 14px', fontSize: '13px' }}
+                >
+                  Done
                 </button>
               </div>
             </>
@@ -328,10 +353,10 @@ function ContactList({ headers, dataRows, mapping, onContactsUpdated }) {
               <th style={{ padding: '10px 12px', width: '1%' }}>
                 <input
                   type="checkbox"
-                  checked={allSelected}
-                  ref={(el) => { if (el) el.indeterminate = someSelected }}
+                  checked={selectionModeActive}
+                  ref={(el) => { if (el) el.indeterminate = selectionModeActive && someSelected }}
                   onChange={toggleSelectAll}
-                  aria-label="Select all contacts"
+                  aria-label={selectionModeActive ? 'Exit selection mode' : 'Select all contacts'}
                 />
               </th>
               <th style={{ textAlign: 'left', padding: '10px 12px', color: 'var(--text-secondary)', fontWeight: 500 }}>Name</th>
@@ -365,12 +390,14 @@ function ContactList({ headers, dataRows, mapping, onContactsUpdated }) {
                     }}
                   >
                     <td style={{ padding: '10px 12px' }}>
-                      <input
-                        type="checkbox"
-                        checked={isSelected}
-                        onChange={() => toggleRowSelected(originalIndex)}
-                        aria-label={`Select ${row[nameIndex] || 'contact'}`}
-                      />
+                      {selectionModeActive && (
+                        <input
+                          type="checkbox"
+                          checked={isSelected}
+                          onChange={() => toggleRowSelected(originalIndex)}
+                          aria-label={`Select ${row[nameIndex] || 'contact'}`}
+                        />
+                      )}
                     </td>
                     <td style={{ padding: '10px 12px' }}>{row[nameIndex]}</td>
                     <td style={{ padding: '10px 12px' }}>{row[phoneIndex]}</td>
