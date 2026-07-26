@@ -1,4 +1,4 @@
-import { useState, useEffect, Fragment, useMemo } from 'react'
+import { useState, useEffect, useRef, Fragment, useMemo } from 'react'
 import { classifyPhone, resolveWithCountry } from '../utils/phone'
 import CountryPicker from './CountryPicker'
 
@@ -21,10 +21,37 @@ function ContactList({ headers, dataRows, mapping, onContactsUpdated }) {
   // name/phone text" are different interactions.
   const [pickingCountryFor, setPickingCountryFor] = useState(null)
 
+  // Multi-select state. Keyed by originalIndex (same identity used
+  // everywhere else in this component), so selection survives re-sorting
+  // and stays correctly attached to a row even if the sort order shifts
+  // underneath it (e.g. a selected row gets edited and its status changes).
+  const [selected, setSelected] = useState(() => new Set())
+  const [confirmingBulkRemove, setConfirmingBulkRemove] = useState(false)
+
+  // Undo state, shared by single-row and bulk remove. Removed rows aren't
+  // deleted from `contacts` right away — they're held here for 5 seconds
+  // with their original position, so "Undo" can splice them back in
+  // exactly where they were. If the timer runs out, or another remove
+  // happens first, the pending batch is just abandoned (already gone
+  // from `contacts`, nothing left to do).
+  //   pendingUndo: { rows: [{ row, originalIndex }], count } | null
+  const [pendingUndo, setPendingUndo] = useState(null)
+  const undoTimerRef = useRef(null)
+
+  useEffect(() => {
+    return () => {
+      if (undoTimerRef.current) clearTimeout(undoTimerRef.current)
+    }
+  }, [])
+
   useEffect(() => {
     setContacts(dataRows)
     setEditingIndex(null)
     setPickingCountryFor(null)
+    setSelected(new Set())
+    setConfirmingBulkRemove(false)
+    if (undoTimerRef.current) clearTimeout(undoTimerRef.current)
+    setPendingUndo(null)
   }, [dataRows])
 
   // Classify every row once per render, keeping the original index attached
@@ -50,11 +77,61 @@ function ContactList({ headers, dataRows, mapping, onContactsUpdated }) {
     onContactsUpdated(updated)
   }
 
+  // Removes a single row, then holds it for 5s so it can be undone.
   function handleRemove(originalIndex) {
+    const removedRow = contacts[originalIndex]
     const updated = contacts.filter((_, i) => i !== originalIndex)
+
     commitContacts(updated)
     if (editingIndex === originalIndex) setEditingIndex(null)
     if (pickingCountryFor === originalIndex) setPickingCountryFor(null)
+    setSelected((prev) => {
+      if (!prev.has(originalIndex)) return prev
+      const next = new Set(prev)
+      next.delete(originalIndex)
+      return next
+    })
+
+    startUndoWindow([{ row: removedRow, originalIndex }])
+  }
+
+  // Shared by single-row and bulk remove. `removedEntries` is the list of
+  // { row, originalIndex } pairs just taken out of `contacts`, in their
+  // original ascending index order — that order matters for undo, since
+  // re-inserting them one at a time by ascending index puts everything
+  // back exactly where it was, regardless of how many rows were removed
+  // at once.
+  function startUndoWindow(removedEntries) {
+    if (undoTimerRef.current) clearTimeout(undoTimerRef.current)
+
+    setPendingUndo({ rows: removedEntries, count: removedEntries.length })
+
+    undoTimerRef.current = setTimeout(() => {
+      setPendingUndo(null)
+      undoTimerRef.current = null
+    }, 5000)
+  }
+
+  function handleUndoRemove() {
+    if (!pendingUndo) return
+    if (undoTimerRef.current) {
+      clearTimeout(undoTimerRef.current)
+      undoTimerRef.current = null
+    }
+
+    // Re-insert removed rows back at their original indices. Since
+    // `contacts` has shrunk since removal, indices are restored by
+    // inserting in ascending order — each insertion shifts everything
+    // after it by one, which is exactly what's needed to line the next
+    // one up correctly too.
+    let restored = [...contacts]
+    for (const { row, originalIndex } of pendingUndo.rows) {
+      const insertAt = Math.min(originalIndex, restored.length)
+      restored = [...restored.slice(0, insertAt), row, ...restored.slice(insertAt)]
+    }
+
+    commitContacts(restored)
+    setPendingUndo(null)
   }
 
   function handleStartEdit(originalIndex, row) {
@@ -99,6 +176,54 @@ function ContactList({ headers, dataRows, mapping, onContactsUpdated }) {
     setPickingCountryFor(null)
   }
 
+  // --- Multi-select handlers ---
+
+  function toggleRowSelected(originalIndex) {
+    setSelected((prev) => {
+      const next = new Set(prev)
+      if (next.has(originalIndex)) {
+        next.delete(originalIndex)
+      } else {
+        next.add(originalIndex)
+      }
+      return next
+    })
+  }
+
+  const allSelected = contacts.length > 0 && selected.size === contacts.length
+  const someSelected = selected.size > 0 && !allSelected
+
+  function toggleSelectAll() {
+    if (allSelected || someSelected) {
+      setSelected(new Set())
+    } else {
+      setSelected(new Set(contacts.map((_, i) => i)))
+    }
+  }
+
+  function handleBulkRemoveClick() {
+    setConfirmingBulkRemove(true)
+  }
+
+  function handleConfirmBulkRemove() {
+    const removedEntries = contacts
+      .map((row, i) => ({ row, originalIndex: i }))
+      .filter(({ originalIndex }) => selected.has(originalIndex))
+    const updated = contacts.filter((_, i) => !selected.has(i))
+
+    commitContacts(updated)
+    if (editingIndex !== null && selected.has(editingIndex)) setEditingIndex(null)
+    if (pickingCountryFor !== null && selected.has(pickingCountryFor)) setPickingCountryFor(null)
+    setSelected(new Set())
+    setConfirmingBulkRemove(false)
+
+    startUndoWindow(removedEntries)
+  }
+
+  function handleCancelBulkRemove() {
+    setConfirmingBulkRemove(false)
+  }
+
   const validCount = classified.filter((c) => c.classification.status === 'valid').length
   const needsCountryCount = classified.filter((c) => c.classification.status === 'needs-country').length
   const invalidCount = classified.filter((c) => c.classification.status === 'invalid').length
@@ -120,10 +245,95 @@ function ContactList({ headers, dataRows, mapping, onContactsUpdated }) {
         </div>
       </div>
 
+      {/* Undo banner — shown for 5s after any remove (single or bulk).
+          Placed above the bulk action bar since the two can't really
+          overlap in practice (removing clears selection first). */}
+      {pendingUndo && (
+        <div
+          className="bs-card"
+          style={{
+            marginBottom: 'var(--space-md)',
+            background: 'var(--bg-card-muted)',
+            borderStyle: 'solid',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            flexWrap: 'wrap',
+            gap: '8px',
+            padding: 'var(--space-md)',
+          }}
+        >
+          <span style={{ fontSize: '13px', color: 'var(--text-primary)' }}>
+            Removed {pendingUndo.count} contact{pendingUndo.count === 1 ? '' : 's'}
+          </span>
+          <button onClick={handleUndoRemove} className="bs-btn bs-btn-secondary" style={{ padding: '6px 14px', fontSize: '13px' }}>
+            Undo
+          </button>
+        </div>
+      )}
+
+      {/* Bulk action bar — only takes up space once something is selected,
+          so the common (nothing selected) case looks identical to before. */}
+      {selected.size > 0 && (
+        <div
+          className="bs-card"
+          style={{
+            marginBottom: 'var(--space-md)',
+            background: 'var(--bg-card-muted)',
+            borderStyle: 'solid',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            flexWrap: 'wrap',
+            gap: '8px',
+            padding: 'var(--space-md)',
+          }}
+        >
+          {!confirmingBulkRemove ? (
+            <>
+              <span style={{ fontSize: '13px', color: 'var(--text-primary)' }}>
+                {selected.size} selected
+              </span>
+              <div style={{ display: 'flex', gap: '8px' }}>
+                <button onClick={handleBulkRemoveClick} className="bs-btn bs-btn-danger" style={{ padding: '6px 14px', fontSize: '13px' }}>
+                  Remove selected
+                </button>
+                <button onClick={() => setSelected(new Set())} className="bs-btn bs-btn-secondary" style={{ padding: '6px 14px', fontSize: '13px' }}>
+                  Clear selection
+                </button>
+              </div>
+            </>
+          ) : (
+            <>
+              <span style={{ fontSize: '13px', color: 'var(--danger)' }}>
+                Remove {selected.size} contact{selected.size === 1 ? '' : 's'}? This can't be undone.
+              </span>
+              <div style={{ display: 'flex', gap: '8px' }}>
+                <button onClick={handleConfirmBulkRemove} className="bs-btn bs-btn-danger" style={{ padding: '6px 14px', fontSize: '13px' }}>
+                  Yes, remove
+                </button>
+                <button onClick={handleCancelBulkRemove} className="bs-btn bs-btn-secondary" style={{ padding: '6px 14px', fontSize: '13px' }}>
+                  Cancel
+                </button>
+              </div>
+            </>
+          )}
+        </div>
+      )}
+
       <div style={{ maxHeight: '460px', overflowY: 'auto', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)' }}>
         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px' }}>
           <thead>
             <tr style={{ background: 'var(--bg-card-muted)', position: 'sticky', top: 0 }}>
+              <th style={{ padding: '10px 12px', width: '1%' }}>
+                <input
+                  type="checkbox"
+                  checked={allSelected}
+                  ref={(el) => { if (el) el.indeterminate = someSelected }}
+                  onChange={toggleSelectAll}
+                  aria-label="Select all contacts"
+                />
+              </th>
               <th style={{ textAlign: 'left', padding: '10px 12px', color: 'var(--text-secondary)', fontWeight: 500 }}>Name</th>
               <th style={{ textAlign: 'left', padding: '10px 12px', color: 'var(--text-secondary)', fontWeight: 500 }}>Phone</th>
               <th style={{ textAlign: 'left', padding: '10px 12px', color: 'var(--text-secondary)', fontWeight: 500 }}>Status</th>
@@ -135,6 +345,7 @@ function ContactList({ headers, dataRows, mapping, onContactsUpdated }) {
               const { status } = classification
               const isEditing = editingIndex === originalIndex
               const isPickingCountry = pickingCountryFor === originalIndex
+              const isSelected = selected.has(originalIndex)
 
               const badgeClass =
                 status === 'valid' ? 'bs-badge bs-badge-success' :
@@ -147,7 +358,20 @@ function ContactList({ headers, dataRows, mapping, onContactsUpdated }) {
 
               return (
                 <Fragment key={originalIndex}>
-                  <tr style={{ borderTop: '1px solid var(--border)' }}>
+                  <tr
+                    style={{
+                      borderTop: '1px solid var(--border)',
+                      background: isSelected ? 'var(--accent-bg)' : undefined,
+                    }}
+                  >
+                    <td style={{ padding: '10px 12px' }}>
+                      <input
+                        type="checkbox"
+                        checked={isSelected}
+                        onChange={() => toggleRowSelected(originalIndex)}
+                        aria-label={`Select ${row[nameIndex] || 'contact'}`}
+                      />
+                    </td>
                     <td style={{ padding: '10px 12px' }}>{row[nameIndex]}</td>
                     <td style={{ padding: '10px 12px' }}>{row[phoneIndex]}</td>
                     <td style={{ padding: '10px 12px' }}>
@@ -180,7 +404,7 @@ function ContactList({ headers, dataRows, mapping, onContactsUpdated }) {
 
                   {isPickingCountry && (
                     <tr style={{ borderTop: '1px solid var(--border)', background: 'var(--bg-card-muted)' }}>
-                      <td colSpan={4} style={{ padding: 'var(--space-md)' }}>
+                      <td colSpan={5} style={{ padding: 'var(--space-md)' }}>
                         <p style={{ fontSize: '13px', marginBottom: 'var(--space-sm)', color: 'var(--text-primary)' }}>
                           "{row[phoneIndex]}" has no country code — which country is this number from?
                         </p>
@@ -196,7 +420,7 @@ function ContactList({ headers, dataRows, mapping, onContactsUpdated }) {
 
                   {isEditing && (
                     <tr style={{ borderTop: '1px solid var(--border)', background: 'var(--bg-card-muted)' }}>
-                      <td colSpan={4} style={{ padding: 'var(--space-md)' }}>
+                      <td colSpan={5} style={{ padding: 'var(--space-md)' }}>
                         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr auto', gap: 'var(--space-md)', alignItems: 'end' }}>
                           <div>
                             <label className="bs-label" htmlFor={`edit-name-${originalIndex}`}>Name</label>
