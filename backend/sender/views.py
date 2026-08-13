@@ -1,4 +1,4 @@
-import os
+﻿import os
 import re
 import threading
 from django.conf import settings as django_settings
@@ -18,7 +18,7 @@ MAX_CONTACTS_PER_CAMPAIGN = 5000
 
 
 def _login_code_path(user_id):
-    """Per-user WhatsApp login-code text file — keeps two users' logins
+    """Per-user WhatsApp login-code text file â€” keeps two users' logins
     from colliding, same idea as the old per-user QR screenshot path."""
     return os.path.join(django_settings.MEDIA_ROOT, f'login_code_{user_id}.txt')
 
@@ -39,7 +39,7 @@ def _login_code_error_path(user_id):
     """Written if the automation script fails to generate a login code at
     all (e.g. a Playwright selector didn't match because the page hadn't
     finished loading). Previously this failure was console/screenshot-only
-    — the frontend had no signal and just showed a blank overlay until the
+    â€” the frontend had no signal and just showed a blank overlay until the
     unrelated 10-minute timeout eventually fired."""
     return os.path.join(django_settings.MEDIA_ROOT, f'login_code_error_{user_id}.txt')
 
@@ -95,7 +95,7 @@ def login_user(request):
 def whatsapp_profile(request):
     """
     GET returns the current WhatsApp number on file (blank string if
-    never set). PUT updates it — validated with the same phone regex
+    never set). PUT updates it â€” validated with the same phone regex
     used for contacts, since this number needs to actually work with
     WhatsApp's phone-number login flow.
     """
@@ -147,7 +147,7 @@ def create_campaign(request):
 
     if len(contacts_list) > MAX_CONTACTS_PER_CAMPAIGN:
         return Response(
-            {'error': f'Too many contacts — max {MAX_CONTACTS_PER_CAMPAIGN} per campaign'},
+            {'error': f'Too many contacts â€” max {MAX_CONTACTS_PER_CAMPAIGN} per campaign'},
             status=status.HTTP_400_BAD_REQUEST
         )
 
@@ -156,12 +156,12 @@ def create_campaign(request):
         phone = str(contact.get('phone', '')).strip()
         cleaned = re.sub(r'[\s\-()]', '', phone)
         if PHONE_RE.match(cleaned):
-            # Store the cleaned version, not the raw input — this is what
+            # Store the cleaned version, not the raw input â€” this is what
             # gets matched against later and what whatsapp_automation.py
             # expects (it does its own light stripping of '+'/' ' but
             # shouldn't have to also handle dashes/parens/etc left over
             # from a messy CSV).
-            valid_contacts.append({**contact, 'phone': cleaned})
+            valid_contacts.append({contact, 'phone': cleaned})
 
     if not valid_contacts:
         return Response(
@@ -194,7 +194,7 @@ def create_campaign(request):
 @api_view(['GET'])
 def get_campaign_status(request, campaign_id):
     """
-    Returns the current status of a campaign — used to poll progress.
+    Returns the current status of a campaign â€” used to poll progress.
     Only returns it if the requesting user actually owns this campaign.
     """
     try:
@@ -254,7 +254,7 @@ def _mark_login_slow(user_id):
 
 
 def _mark_login_failed(user_id):
-    """Called from the automation script when it gives up entirely —
+    """Called from the automation script when it gives up entirely â€”
     page failed to load, or the 10-minute login timeout was hit."""
     path = _login_failed_flag_path(user_id)
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -264,9 +264,9 @@ def _mark_login_failed(user_id):
 
 def _mark_login_code_error(user_id, error_text):
     """Called from the automation script if it couldn't generate a login
-    code at all. This does NOT stop the send — the script still moves on
+    code at all. This does NOT stop the send â€” the script still moves on
     to wait for the chat list (in case the code did appear but couldn't be
-    scraped) — it just gives the frontend something to show instead of a
+    scraped) â€” it just gives the frontend something to show instead of a
     silent blank overlay while that continues."""
     path = _login_code_error_path(user_id)
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -276,7 +276,7 @@ def _mark_login_code_error(user_id, error_text):
 
 def run_campaign_send(campaign_id, user_id):
     """
-    This runs in a background thread — pulls campaign data and starts sending.
+    This runs in a background thread â€” pulls campaign data and starts sending.
 
     Takes user_id explicitly (passed in by start_sending, which already
     verified ownership) rather than trusting campaign_id alone. The lookup
@@ -310,7 +310,7 @@ def run_campaign_send(campaign_id, user_id):
 
     contacts = list(campaign.contacts.filter(status='pending').values('id', 'name', 'phone'))
     media_paths = [m.file.path for m in campaign.media_files.all()]
-    # This is no longer the actual gap used in delay mode — that's now a
+    # This is no longer the actual gap used in delay mode â€” that's now a
     # randomized 5-15s pace with occasional longer breaks, computed inside
     # send_whatsapp_messages. This value only distinguishes delay (any
     # value other than 1) from instant (1s flat, unchanged).
@@ -341,7 +341,7 @@ def start_sending(request, campaign_id):
     """
     Kicks off the sending process in a background thread so the API responds immediately.
     Only allows this if the requesting user owns the campaign, and only
-    if they've set a WhatsApp number in their profile — without one there's
+    if they've set a WhatsApp number in their profile â€” without one there's
     nothing to enter into the login-code flow, so it's better to catch
     that here than have the automation script fail 30+ seconds in.
     """
@@ -361,3 +361,6 @@ def start_sending(request, campaign_id):
     thread.start()
 
     return Response({'message': 'Sending started', 'campaign_id': campaign_id})
+
+
+
