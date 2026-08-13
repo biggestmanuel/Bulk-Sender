@@ -1,17 +1,140 @@
+import re
 import time
 import os
 import random
+import shutil
 import urllib.parse
 from playwright.sync_api import sync_playwright
 
 SESSIONS_DIR = os.path.join(os.path.dirname(__file__), '..', 'whatsapp_session')
 MEDIA_DIR = os.path.join(os.path.dirname(__file__), '..', 'media')
 
+
+def _find_installed_browser():
+    """Prefer a real local Chrome/Edge installation over Playwright's bundled Chromium.
+
+    WhatsApp Web is strict about the browser it will accept for the linked-device flow.
+    A manually-installed Chrome or Edge is much more reliable than the headless bundled
+    Chromium used by Playwright, especially in environments that will later be used to
+    complete the phone-link handshake.
+    """
+    candidates = []
+    for env_key in ('WHATSAPP_BROWSER_PATH', 'CHROME_PATH', 'EDGE_PATH'):
+        value = os.environ.get(env_key)
+        if value:
+            candidates.append(value)
+
+    candidates.extend([
+        r'C:\Program Files\Microsoft\Edge\Application\msedge.exe',
+        r'C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe',
+        r'C:\Program Files\Google\Chrome\Application\chrome.exe',
+        r'C:\Program Files (x86)\Google\Chrome\Application\chrome.exe',
+        r'C:\Program Files\Google\Chrome for Testing\Application\chrome.exe',
+        r'C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe',
+    ])
+
+    for candidate in candidates:
+        if candidate and os.path.exists(candidate):
+            return candidate
+    return None
+
+
+def _browser_channel_for(executable_path):
+    if not executable_path:
+        return os.environ.get('WHATSAPP_BROWSER_CHANNEL', '').strip().lower() or 'chromium'
+
+    lower = executable_path.lower()
+    if 'msedge' in lower:
+        return 'msedge'
+    if 'chrome' in lower or 'brave' in lower:
+        return 'chrome'
+    return 'chromium'
+
+
+def _launch_browser_context(p, session_dir):
+    browser_path = _find_installed_browser()
+    channel = _browser_channel_for(browser_path)
+    headless = os.environ.get('WHATSAPP_HEADLESS', 'false').strip().lower() == 'true'
+
+    launch_kwargs = {
+        'user_data_dir': session_dir,
+        'headless': headless,
+        'viewport': {'width': 1280, 'height': 800},
+        'args': ['--disable-blink-features=AutomationControlled'],
+        'ignore_default_args': ['--enable-automation'],
+    }
+
+    if browser_path:
+        launch_kwargs['executable_path'] = browser_path
+    else:
+        launch_kwargs['channel'] = channel
+
+    return p.chromium.launch_persistent_context(**launch_kwargs)
+
 # NOTE: these are ceilings, not fixed waits. wait_for_selector returns the
 # instant the chat list appears — a fast scan still moves on in seconds.
 # These only matter for people who get stuck.
 LOGIN_SLOW_WARNING_MS = 300000   # 5 min — if still not logged in, flag "slow network"
 LOGIN_TOTAL_TIMEOUT_MS = 600000  # 10 min — real ceiling before giving up entirely
+
+COUNTRY_CODES = {
+    '234': 'Nigeria',
+    '233': 'Ghana',
+    '254': 'Kenya',
+    '250': 'Rwanda',
+    '255': 'Tanzania',
+    '256': 'Uganda',
+    '1': 'United States',
+    '44': 'United Kingdom',
+    '27': 'South Africa',
+    '61': 'Australia',
+    '49': 'Germany',
+    '31': 'Netherlands',
+    '32': 'Belgium',
+    '33': 'France',
+    '41': 'Switzerland',
+    '7': 'Russia',
+    '91': 'India',
+    '92': 'Pakistan',
+    '971': 'United Arab Emirates',
+}
+
+
+def _country_name_for_phone(phone_number):
+    digits = re.sub(r'\D', '', phone_number or '')
+    if not digits:
+        return None, ''
+
+    for code in sorted(COUNTRY_CODES, key=len, reverse=True):
+        if digits.startswith(code):
+            return COUNTRY_CODES[code], code
+    return None, ''
+
+
+def _fill_phone_login(page, whatsapp_number):
+    digits = re.sub(r'\D', '', whatsapp_number or '')
+    if not digits:
+        raise ValueError('WhatsApp number is empty.')
+
+    country_name, code = _country_name_for_phone(whatsapp_number)
+    local_digits = digits[len(code):] if code else digits
+
+    selector = '[data-testid="phone-number-input"], input[autocomplete="tel"], input[type="tel"]'
+    phone_input = page.wait_for_selector(selector, timeout=30000)
+
+    if country_name:
+        country_button = page.locator(f'button:has-text("{country_name}")').first
+        if country_button.count() > 0:
+            try:
+                country_button.click(force=True)
+                page.wait_for_timeout(1500)
+            except Exception:
+                pass
+
+    phone_input.fill('')
+    phone_input.fill(local_digits or digits)
+    page.wait_for_timeout(500)
+    return local_digits or digits
 
 # --- Delay-mode pacing ---
 # A fixed gap between every message (even a "random" one drawn from a
@@ -70,27 +193,18 @@ def send_whatsapp_messages(contacts, message_text, user_id, whatsapp_number, med
     media_paths = media_paths or []
     login_code_path = get_login_code_path(user_id)
     session_dir = get_session_dir(user_id)
+    if os.path.exists(session_dir):
+        shutil.rmtree(session_dir)
+    os.makedirs(session_dir, exist_ok=True)
 
     with sync_playwright() as p:
-        # Stays headless — the code is meant to be read from the web app,
-        # not from a popped-up browser window on the machine running this
-        # server.
-        browser = p.chromium.launch_persistent_context(
-            user_data_dir=session_dir,
-            headless=True,
-            args=["--disable-blink-features=AutomationControlled"],
-            viewport={"width": 1280, "height": 800},
-            user_agent=(
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
-            ),
-            extra_http_headers={
-                "sec-ch-ua": '"Chromium";v="131", "Not_A Brand";v="24", "Google Chrome";v="131"',
-                "sec-ch-ua-mobile": "?0",
-                "sec-ch-ua-platform": '"Windows"',
-            },
-        )
+        browser = _launch_browser_context(p, session_dir)
         page = browser.new_page()
+        page.set_extra_http_headers({
+            "sec-ch-ua": '"Chromium";v="131", "Not_A Brand";v="24", "Google Chrome";v="131"',
+            "sec-ch-ua-mobile": "?0",
+            "sec-ch-ua-platform": '"Windows"',
+        })
         page.add_init_script(
             "Object.defineProperty(navigator, 'webdriver', { get: () => undefined })"
         )
@@ -133,9 +247,8 @@ def send_whatsapp_messages(contacts, message_text, user_id, whatsapp_number, med
         # at the point this selector search was timing out — 15s wasn't
         # enough margin on a slower connection or cold Chromium launch.
         try:
-            login_link = page.wait_for_selector(
-                'text=Log in with phone number', state='visible', timeout=45000
-            )
+            login_link = page.locator('text=/Link with phone number instead|Log in with phone number/').first
+            login_link.wait_for(state='visible', timeout=45000)
 
             # Debug: confirms the link is actually visible/positioned
             # before we click it.
@@ -143,40 +256,42 @@ def send_whatsapp_messages(contacts, message_text, user_id, whatsapp_number, med
             os.makedirs(os.path.dirname(before_click_path), exist_ok=True)
             page.screenshot(path=before_click_path)
 
-            login_link.click()
+            # Playwright's normal click can fail when the link sits outside the
+            # viewport or is positioned by a transform. Force the click through
+            # the DOM itself, which is how the QA probe succeeded against the
+            # real WhatsApp page.
+            login_link.evaluate("node => node.click()")
 
             # Debug: confirms whether the click above actually navigated
             # to the phone-number screen.
             after_click_path = os.path.join(os.path.dirname(login_code_path), f'debug_after_click_{user_id}.png')
             page.screenshot(path=after_click_path)
 
-            phone_input = page.wait_for_selector(
-                '[data-testid="phone-number-input"]', timeout=15000
-            )
-            # fill() clears the field first, so this overwrites whatever
-            # country WhatsApp auto-detected (e.g. "+234 ") with the real
-            # number. Pass the full "+countrycode..." string as stored —
-            # the field expects the '+', don't strip it.
-            phone_input.fill(whatsapp_number)
+            # WhatsApp expects the country to be selected before it accepts the
+            # national number. We select the matching country by the saved phone's
+            # calling code, then supply only the local digits so WhatsApp infers the
+            # same country code automatically instead of needing a manual re-entry.
+            _fill_phone_login(page, whatsapp_number)
 
-            page.click('span:text-is("Next")', timeout=10000)
+            next_button = page.locator('button:has-text("Next")').first
+            next_button.wait_for(state='visible', timeout=15000)
+            next_button.click(force=True)
 
-            # The code renders as one <div> per character plus a literal
-            # "-" span in between, with no wrapping data-testid or stable
-            # class name (WhatsApp's classes here look build-hashed).
-            # Anchoring on the dash — content that won't change — and
-            # reading its parent element is more durable than guessing at
-            # a container selector.
-            dash_span = page.wait_for_selector(
-                'span[aria-hidden="true"]:text-is("-")', timeout=30000
-            )
-            code_container = dash_span.evaluate_handle("el => el.parentElement").as_element()
-            code_text = code_container.inner_text().replace('\n', '').strip()
-
-            os.makedirs(os.path.dirname(login_code_path), exist_ok=True)
-            with open(login_code_path, 'w') as f:
-                f.write(code_text)
-            print(f"Login code generated for user {user_id}: {code_text}")
+            # The code is displayed as individual characters split around a dash,
+            # not as a single clean string. Read the visible page text and extract
+            # the code-like segment after "Enter code on phone". This is enough
+            # to show the user what to type on their phone, without assuming a
+            # brittle DOM structure that changes across WhatsApp versions.
+            page_text = page.locator('body').inner_text()
+            code_match = re.search(r'Enter code on phone.*?([A-Z0-9]{2}(?:\s*[-\s]\s*[A-Z0-9]){5,7})', page_text, flags=re.S | re.I)
+            code_text = code_match.group(1).replace('-', '').replace(' ', '') if code_match else None
+            if code_text:
+                os.makedirs(os.path.dirname(login_code_path), exist_ok=True)
+                with open(login_code_path, 'w') as f:
+                    f.write(code_text)
+                print(f"Login code generated for user {user_id}: {code_text}")
+            else:
+                print(f"Could not parse login code from page for user {user_id}. Page text: {page_text[:1000]}")
 
         except Exception as e:
             debug_path = os.path.join(os.path.dirname(login_code_path), f'debug_no_code_{user_id}.png')

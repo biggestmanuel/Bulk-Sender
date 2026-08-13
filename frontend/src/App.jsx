@@ -118,9 +118,11 @@ function App() {
     setError('')
 
     try {
+      const nameIndex = headers.indexOf(mapping.nameCol)
+      const phoneIndex = headers.indexOf(mapping.phoneCol)
       const payloadContacts = contacts.map((row) => ({
-        name: row[mapping.nameCol] ?? '',
-        phone: row[mapping.phoneCol] ?? '',
+        name: row[nameIndex] ?? '',
+        phone: row[phoneIndex] ?? '',
       }))
 
       const created = await createCampaign({
