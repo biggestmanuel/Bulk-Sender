@@ -114,8 +114,34 @@ LOGIN_CODE_POLL_TIMEOUT_SECONDS = float(
 SESSION_RETRIES = 1
 
 
+_ENV_FLAG_TRUTHY = {'1', 'true', 'yes', 'on'}
+_ENV_FLAG_FALSY = {'0', 'false', 'no', 'off'}
+
+
 def _env_flag(name, default='false'):
-    return os.environ.get(name, default).strip().lower() in {'1', 'true', 'yes', 'on'}
+    """
+    Reads a boolean environment variable, rejecting unrecognised values.
+
+    This had the same silent-inversion bug env_bool() in settings.py had, and
+    it was worse here: `WHATSAPP_DEBUG=treu` quietly disabled the debug
+    screenshots, so when a send broke you had no diagnostics and no error
+    explaining why they were missing. Debugging a selector failure without
+    screenshots is close to impossible.
+
+    Raising is the right call for every flag here because they all gate
+    diagnostics or browser behaviour — a wrong value should stop the send
+    rather than quietly produce a subtly wrong run.
+    """
+    raw = os.environ.get(name, default).strip().lower()
+    if raw in _ENV_FLAG_TRUTHY:
+        return True
+    if raw in _ENV_FLAG_FALSY:
+        return False
+
+    raise ValueError(
+        f'{name}={raw!r} is not a valid boolean. '
+        f'Use one of: {", ".join(sorted(_ENV_FLAG_TRUTHY | _ENV_FLAG_FALSY))}.'
+    )
 
 
 def _find_installed_browser():

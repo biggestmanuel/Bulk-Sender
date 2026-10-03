@@ -203,7 +203,15 @@ ASGI_APPLICATION = 'config.asgi.application'
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': env_list('DATABASE_PATH', default=[str(BASE_DIR / 'db.sqlite3')])[0],
+        # Read as a single value, not a comma-separated list. env_list() was
+        # used here originally, which would silently truncate a path
+        # containing a comma to everything before it.
+        'NAME': os.environ.get('DATABASE_PATH') or str(BASE_DIR / 'db.sqlite3'),
+        # Sends run on background threads while HTTP requests are being served,
+        # so a write lock can be held at the moment a read starts. Without a
+        # timeout, SQLite raises "database is locked" immediately instead of
+        # waiting, which surfaced as a failed campaign.
+        'OPTIONS': {'timeout': int(os.environ.get('SQLITE_TIMEOUT_SECONDS', '20'))},
     }
 }
 
