@@ -38,13 +38,39 @@ except ImportError:  # pragma: no cover - dependency is in requirements.txt
 # settings file alone. These three helpers centralise the parsing rules.
 
 TRUTHY = {'1', 'true', 'yes', 'on'}
+FALSY = {'0', 'false', 'no', 'off'}
 
 
 def env_bool(name, default=False):
+    """
+    Reads a boolean environment variable, rejecting unrecognised values.
+
+    The original version returned False for anything not in TRUTHY, which
+    turned every typo into a silent False. `DEBUG=flase` therefore behaved as
+    DEBUG=False, and the resulting failure pointed at CRYPTOGRAPHY_KEYS rather
+    than at the variable actually misconfigured — you would have chased the
+    wrong setting entirely.
+
+    An unrecognised value now raises, naming the variable, what it received,
+    and what it accepts.
+    """
     raw = os.environ.get(name)
     if raw is None or raw.strip() == '':
         return default
-    return raw.strip().lower() in TRUTHY
+
+    normalized = raw.strip().lower()
+    if normalized in TRUTHY:
+        return True
+    if normalized in FALSY:
+        return False
+
+    raise ImproperlyConfigured(
+        f'{name}={raw!r} is not a valid boolean. '
+        f'Use one of: {", ".join(sorted(TRUTHY | FALSY))}. '
+        f'(Checked because a typo here is silent and hard to trace — for '
+        f'instance DEBUG=flase reads as False and the app then fails on a '
+        f'different setting entirely.)'
+    )
 
 
 def env_list(name, default=None):

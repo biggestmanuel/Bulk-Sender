@@ -12,6 +12,19 @@ logger = logging.getLogger(__name__)
 
 
 class Campaign(models.Model):
+    class Meta:
+        indexes = [
+            # The campaign list filters by owner and orders newest-first. With
+            # an index on owner_id alone, SQLite sorts the whole result set in
+            # a temp B-tree on every request; EXPLAIN confirmed
+            # "USE TEMP B-TREE FOR ORDER BY". Harmless at a handful of rows,
+            # degrading linearly as a user's history grows.
+            models.Index(fields=['owner', '-created_at'], name='campaign_owner_created_idx'),
+            # Stale-send recovery scans for in-flight campaigns regardless of
+            # owner, so a plain status index is what's needed there.
+            models.Index(fields=['status'], name='campaign_status_idx'),
+        ]
+
     class Status(models.TextChoices):
         DRAFT = 'draft', 'Draft'
         QUEUED = 'queued', 'Queued'
@@ -86,6 +99,16 @@ class Campaign(models.Model):
 
 
 class Contact(models.Model):
+    class Meta:
+        indexes = [
+            # Campaign.progress() groups by status for one campaign, and the
+            # send worker fetches pending contacts for one campaign. Both are
+            # run every 3 seconds per active send, so the status column is
+            # worth carrying in the index rather than grouping over every
+            # contact in the table.
+            models.Index(fields=['campaign', 'status'], name='contact_campaign_status_idx'),
+        ]
+
     campaign = models.ForeignKey(Campaign, on_delete=models.CASCADE, related_name='contacts')
     name = models.CharField(max_length=255)
     phone = EncryptedCharField(max_length=20)
