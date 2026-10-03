@@ -348,7 +348,8 @@ function ContactList({ headers, dataRows, mapping, onContactsUpdated }) {
           ) : (
             <>
               <span style={{ fontSize: '13px', color: 'var(--danger)' }}>
-                Remove {selected.size} contact{selected.size === 1 ? '' : 's'}? This can't be undone.
+                Remove {selected.size} contact{selected.size === 1 ? '' : 's'}? You can undo this for a few seconds
+                afterwards.
               </span>
               <div style={{ display: 'flex', gap: '8px' }}>
                 <button onClick={handleConfirmBulkRemove} className="bs-btn bs-btn-danger" style={{ padding: '6px 14px', fontSize: '13px' }}>

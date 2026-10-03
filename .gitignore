@@ -1,8 +1,28 @@
 node_modules/
-backend-env/
+frontend/dist/
+frontend/.env
+frontend/.env.local
+
 backend/media/
 backend/whatsapp_session/
+backend/whatsapp_debug/
 backend/db.sqlite3
+backend/staticfiles/
+backend/.env
+backend-env/
+
+# File-based cache used for throttle counters when REDIS_URL is unset.
+backend/.cache/
+
 __pycache__/
 *.pyc
 .env
+
+# Never commit real secrets. The examples are the only ones that belong here.
+*.env
+!.env.example
+!env.example
+
+.DS_Store
+Thumbs.db
+*.log

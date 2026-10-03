@@ -1,6 +1,13 @@
-﻿import { useEffect, useMemo, useState } from 'react'
-import { createCampaign, getCampaignStatus, logoutUser, startSending } from './api'
+﻿import { useCallback, useEffect, useMemo, useState } from 'react'
+import {
+  createCampaign,
+  getCampaignStatus,
+  logoutUser,
+  setUnauthorizedHandler,
+  startSending,
+} from './api'
 import Auth from './components/Auth'
+import CampaignList from './components/CampaignList'
 import ColumnMapping from './components/ColumnMapping'
 import ContactList from './components/ContactList'
 import CsvUpload from './components/CsvUpload'
@@ -9,10 +16,15 @@ import MessageComposer from './components/MessageComposer'
 import SendProgress from './components/SendProgress'
 import SendSettings from './components/SendSettings'
 import WhatsAppNumberSettings from './components/WhatsAppNumberSettings'
+import { classifyPhone } from './utils/phone'
+
+const POLL_INTERVAL_MS = 3000
 
 function App() {
-  const [isAuthenticated, setIsAuthenticated] = useState(Boolean(localStorage.getItem('authToken')))
-  const [username, setUsername] = useState(localStorage.getItem('username') || '')
+  const [isAuthenticated, setIsAuthenticated] = useState(() =>
+    Boolean(localStorage.getItem('authToken'))
+  )
+  const [username, setUsername] = useState(() => localStorage.getItem('username') || '')
   const [headers, setHeaders] = useState([])
   const [contacts, setContacts] = useState([])
   const [mapping, setMapping] = useState(null)
@@ -24,37 +36,19 @@ function App() {
   const [isBusy, setIsBusy] = useState(false)
   const [loginOverlay, setLoginOverlay] = useState(false)
 
-  useEffect(() => {
-    if (!localStorage.getItem('authToken')) {
-      setIsAuthenticated(false)
-    }
+  // A 401 anywhere means the token is dead. Handle it centrally instead of
+  // letting every component discover it separately and render a broken screen.
+  const handleExpired = useCallback(() => {
+    setIsAuthenticated(false)
+    setUsername('')
   }, [])
 
   useEffect(() => {
-    if (!campaignId) return
+    setUnauthorizedHandler(handleExpired)
+    return () => setUnauthorizedHandler(null)
+  }, [handleExpired])
 
-    const poll = async () => {
-      try {
-        const status = await getCampaignStatus(campaignId)
-        setCampaignStatus(status)
-      } catch (err) {
-        console.error('Campaign status poll failed:', err)
-      }
-    }
-
-    poll()
-    const timer = setInterval(poll, 3000)
-    return () => clearInterval(timer)
-  }, [campaignId])
-
-  function handleAuthSuccess(token, nextUsername) {
-    localStorage.setItem('authToken', token)
-    localStorage.setItem('username', nextUsername)
-    setUsername(nextUsername)
-    setIsAuthenticated(true)
-  }
-
-  function clearDraftState() {
+  const clearDraftState = useCallback(() => {
     setHeaders([])
     setContacts([])
     setMapping(null)
@@ -65,71 +59,182 @@ function App() {
     setError('')
     setIsBusy(false)
     setLoginOverlay(false)
-  }
+  }, [])
 
-  function handleContactsLoaded(parsed, options = { mode: 'replace' }) {
-    const mergedRows = options.mode === 'merge' && contacts.length > 0
-      ? [...contacts, ...parsed.dataRows]
-      : parsed.dataRows
+  // --- Campaign status polling ---
+  // Stops on its own once the campaign reaches a terminal state. The old
+  // effect polled every 3 seconds for the lifetime of the page, which meant
+  // a request per user per 3 seconds forever after any single send, and kept
+  // decrypting every contact in the campaign on each poll.
+  const isFinished = useMemo(() => {
+    const status = campaignStatus?.campaign_status
+    return status === 'completed' || status === 'failed'
+  }, [campaignStatus])
 
-    setHeaders(parsed.headers)
-    setContacts(mergedRows)
-    setMapping(null)
-    setCampaignId(null)
-    setCampaignStatus(null)
-    setError('')
+  const isSending = useMemo(() => {
+    const status = campaignStatus?.campaign_status
+    return status === 'running' || status === 'queued'
+  }, [campaignStatus])
 
-    if (parsed.headers.includes('name') && parsed.headers.includes('phone')) {
-      setMapping({ nameCol: 'name', phoneCol: 'phone' })
+  useEffect(() => {
+    if (!campaignId || isFinished) return undefined
+
+    let cancelled = false
+
+    const poll = async () => {
+      try {
+        const status = await getCampaignStatus(campaignId)
+        if (!cancelled) setCampaignStatus(status)
+      } catch (err) {
+        // A transient network blip shouldn't tear down the view; the next
+        // tick retries. Only auth failures are handled globally.
+        if (!cancelled) console.error('Campaign status poll failed:', err)
+      }
     }
-  }
 
-  function handleLogout() {
+    poll()
+    const timer = setInterval(poll, POLL_INTERVAL_MS)
+
+    return () => {
+      cancelled = true
+      clearInterval(timer)
+    }
+  }, [campaignId, isFinished])
+
+  const handleAuthSuccess = useCallback((token, nextUsername) => {
+    localStorage.setItem('authToken', token)
+    localStorage.setItem('username', nextUsername)
+    setUsername(nextUsername)
+    setIsAuthenticated(true)
+  }, [])
+
+  const handleContactsLoaded = useCallback(
+    (parsed, options = { mode: 'replace' }) => {
+      const mergedRows =
+        options.mode === 'merge' && contacts.length > 0
+          ? [...contacts, ...parsed.dataRows]
+          : parsed.dataRows
+
+      setHeaders(parsed.headers)
+      setContacts(mergedRows)
+      setMapping(null)
+      setCampaignId(null)
+      setCampaignStatus(null)
+      setError('')
+
+      if (parsed.headers.includes('name') && parsed.headers.includes('phone')) {
+        setMapping({ nameCol: 'name', phoneCol: 'phone' })
+      }
+    },
+    [contacts]
+  )
+
+  const handleLogout = useCallback(() => {
     logoutUser()
     setIsAuthenticated(false)
     setUsername('')
     clearDraftState()
-  }
+  }, [clearDraftState])
+
+  const handleLoginReady = useCallback(() => setLoginOverlay(false), [])
+
+  const handleLoginFailed = useCallback(() => {
+    setLoginOverlay(false)
+    setError('WhatsApp login failed. Please try the campaign again.')
+  }, [])
+
+  /**
+   * A retry started from the campaign list needs to show the login overlay and
+   * progress panel, which live here rather than in CampaignList.
+   */
+  const handleCampaignRestarted = useCallback((restartedCampaignId) => {
+    setCampaignId(restartedCampaignId)
+    setCampaignStatus(null)
+    setLoginOverlay(true)
+  }, [])
+
+  // --- Contact validation, mirrored from ContactList so Start can be gated ---
+  const phoneIndex = mapping ? headers.indexOf(mapping.phoneCol) : -1
+  const contactSummary = useMemo(() => {
+    if (phoneIndex < 0) return { total: 0, valid: 0, invalid: 0, needsCountry: 0 }
+    let valid = 0
+    let invalid = 0
+    let needsCountry = 0
+    for (const row of contacts) {
+      const { status } = classifyPhone(row[phoneIndex])
+      if (status === 'valid') valid += 1
+      else if (status === 'needs-country') needsCountry += 1
+      else invalid += 1
+    }
+    return { total: contacts.length, valid, invalid, needsCountry }
+  }, [contacts, phoneIndex])
 
   const sendSummary = useMemo(() => {
-    const total = campaignStatus?.contacts?.length || 0
-    const sent = campaignStatus?.contacts?.filter((contact) => contact.status === 'sent').length || 0
-    const failed = campaignStatus?.contacts?.filter((contact) => contact.status === 'failed').length || 0
-    return { total, sent, failed }
+    // Prefer the server's grouped counts; it computes them in one query.
+    if (campaignStatus?.progress) {
+      const { total, sent, failed } = campaignStatus.progress
+      return { total, sent, failed }
+    }
+    const list = campaignStatus?.contacts || []
+    return {
+      total: list.length,
+      sent: list.filter((c) => c.status === 'sent').length,
+      failed: list.filter((c) => c.status === 'failed').length,
+    }
   }, [campaignStatus])
 
-  async function handleStartCampaign() {
-    if (!headers.length || !mapping) {
-      setError('Map the CSV columns before starting the campaign.')
-      return
-    }
+  const canStart =
+    Boolean(headers.length) &&
+    Boolean(mapping) &&
+    Boolean(messageData?.message?.trim()) &&
+    contacts.length > 0 &&
+    contactSummary.invalid === 0 &&
+    contactSummary.needsCountry === 0 &&
+    contactSummary.valid > 0
 
-    if (!messageData || !messageData.message.trim()) {
-      setError('Write a message before sending.')
-      return
+  const startBlockedReason = useMemo(() => {
+    if (!contacts.length) return 'Upload at least one contact.'
+    if (!mapping) return 'Map the CSV columns before starting.'
+    if (contactSummary.invalid > 0) {
+      return `${contactSummary.invalid} contact${contactSummary.invalid === 1 ? '' : 's'} ` +
+        `still ${contactSummary.invalid === 1 ? 'has' : 'have'} an invalid phone number. ` +
+        'Edit or remove them first.'
     }
+    if (contactSummary.needsCountry > 0) {
+      return `${contactSummary.needsCountry} contact${
+        contactSummary.needsCountry === 1 ? '' : 's'
+      } still ${contactSummary.needsCountry === 1 ? 'needs' : 'need'} a country code. ` +
+        'Pick a country for them first.'
+    }
+    if (!messageData?.message?.trim()) return 'Write a message before sending.'
+    return null
+  }, [contacts.length, mapping, contactSummary, messageData])
 
-    if (!contacts.length) {
-      setError('Upload at least one contact.')
+  const startCampaign = useCallback(async () => {
+    if (startBlockedReason) {
+      setError(startBlockedReason)
       return
     }
 
     setIsBusy(true)
     setError('')
 
-    try {
-      const nameIndex = headers.indexOf(mapping.nameCol)
-      const phoneIndex = headers.indexOf(mapping.phoneCol)
-      const payloadContacts = contacts.map((row) => ({
-        name: row[nameIndex] ?? '',
-        phone: row[phoneIndex] ?? '',
-      }))
+    const nameIndex = headers.indexOf(mapping.nameCol)
 
+    try {
       const created = await createCampaign({
-        name: `Campaign ${new Date().toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}`,
+        name: `Campaign ${new Date().toLocaleString([], {
+          month: 'short',
+          day: 'numeric',
+          hour: 'numeric',
+          minute: '2-digit',
+        })}`,
         messageText: messageData.message,
         sendMode,
-        contacts: payloadContacts,
+        contacts: contacts.map((row) => ({
+          name: row[nameIndex] ?? '',
+          phone: row[phoneIndex] ?? '',
+        })),
         mediaFiles: messageData.mediaFiles || [],
       })
 
@@ -137,11 +242,13 @@ function App() {
       setLoginOverlay(true)
       await startSending(created.id)
     } catch (err) {
+      // The backend rejects the whole campaign if any number is unusable and
+      // names the offenders, so surface that instead of a generic failure.
       setError(err.message || 'Something went wrong while starting the campaign.')
     } finally {
       setIsBusy(false)
     }
-  }
+  }, [startBlockedReason, headers, mapping, messageData, sendMode, contacts, phoneIndex])
 
   if (!isAuthenticated) {
     return <Auth onAuthSuccess={handleAuthSuccess} />
@@ -160,7 +267,14 @@ function App() {
         }}
       >
         <div>
-          <p style={{ textTransform: 'uppercase', letterSpacing: '0.12em', fontSize: '12px', color: 'var(--text-secondary)' }}>
+          <p
+            style={{
+              textTransform: 'uppercase',
+              letterSpacing: '0.12em',
+              fontSize: '12px',
+              color: 'var(--text-secondary)',
+            }}
+          >
             Bulk sender
           </p>
           <h1 style={{ margin: 0 }}>Campaign workspace</h1>
@@ -169,15 +283,22 @@ function App() {
         <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
           <WhatsAppNumberSettings />
           <span className="bs-badge bs-badge-muted">{username || 'User'}</span>
-          <button onClick={handleLogout} className="bs-btn bs-btn-secondary" style={{ padding: '8px 12px', fontSize: '13px' }}>
+          <button
+            onClick={handleLogout}
+            className="bs-btn bs-btn-secondary"
+            style={{ padding: '8px 12px', fontSize: '13px' }}
+          >
             Log out
           </button>
         </div>
       </header>
 
       {error && (
-        <div className="bs-card" style={{ marginBottom: 'var(--space-lg)', borderColor: 'var(--danger)' }}>
-          <p style={{ color: 'var(--danger)', fontWeight: 500 }}>{error}</p>
+        <div
+          className="bs-card"
+          style={{ marginBottom: 'var(--space-lg)', borderColor: 'var(--danger)' }}
+        >
+          <p style={{ color: 'var(--danger)', fontWeight: 500, margin: 0 }}>{error}</p>
         </div>
       )}
 
@@ -196,20 +317,34 @@ function App() {
             onContactsUpdated={setContacts}
           />
 
-          <MessageComposer onMessageReady={({ message, mediaFiles }) => setMessageData({ message, mediaFiles })} />
+          <MessageComposer onMessageReady={setMessageData} />
 
           <SendSettings onSettingsReady={({ mode }) => setSendMode(mode)} />
 
           {messageData && (
-            <div style={{ marginTop: 'var(--space-lg)', display: 'flex', justifyContent: 'flex-end' }}>
-              <button
-                className="bs-btn bs-btn-primary"
-                disabled={isBusy}
-                onClick={handleStartCampaign}
-                style={{ minWidth: '180px' }}
-              >
-                {isBusy ? 'Starting…' : 'Start sending'}
-              </button>
+            <div style={{ marginTop: 'var(--space-lg)' }}>
+              {startBlockedReason && (
+                <p
+                  style={{
+                    fontSize: '13px',
+                    color: 'var(--text-secondary)',
+                    marginBottom: 'var(--space-sm)',
+                    textAlign: 'right',
+                  }}
+                >
+                  {startBlockedReason}
+                </p>
+              )}
+              <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                <button
+                  className="bs-btn bs-btn-primary"
+                  disabled={isBusy || !canStart || isSending}
+                  onClick={startCampaign}
+                  style={{ minWidth: '180px' }}
+                >
+                  {isBusy ? 'Starting…' : isSending ? 'Sending…' : 'Start sending'}
+                </button>
+              </div>
             </div>
           )}
         </>
@@ -220,22 +355,19 @@ function App() {
           total={sendSummary.total}
           sent={sendSummary.sent}
           failed={sendSummary.failed}
+          campaignStatus={campaignStatus?.campaign_status}
+          statusDetail={campaignStatus?.status_detail}
+          isPolling={isSending}
         />
       )}
 
       {loginOverlay && (
-        <LoginCode
-          onReady={() => setLoginOverlay(false)}
-          onFailed={() => {
-            setLoginOverlay(false)
-            setError('WhatsApp login failed. Please try the campaign again.')
-          }}
-        />
+        <LoginCode onReady={handleLoginReady} onFailed={handleLoginFailed} />
       )}
+
+      <CampaignList onCampaignRestarted={handleCampaignRestarted} />
     </div>
   )
 }
 
 export default App
-
-

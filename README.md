@@ -1,1 +1,338 @@
-# Bulk-Sender
+# Bulk Sender
+
+A self-hosted WhatsApp bulk-messaging tool. Upload a CSV of contacts, write a
+message with a `{name}` placeholder, and the backend drives WhatsApp Web in a
+real browser to send it to every contact.
+
+Django + DRF backend, React + Vite frontend.
+
+---
+
+## ⚠️ Read this first
+
+**This sends unsolicited bulk messages through an unofficial automation
+layer.** WhatsApp has no public send API, so this drives the WhatsApp Web UI
+with Playwright. That means:
+
+- **Your number can be banned.** WhatsApp prohibits bulk messaging and
+  automated sending. No delay setting, header spoofing, or pacing change that.
+  The "delay" mode here makes detection *less trivial*, not safe. If the
+  number matters to you, don't use this on it.
+- **Recipients must have opted in.** Sending marketing messages to people
+  who didn't ask for them is unlawful in many jurisdictions (GDPR, CAN-SPAM,
+  Nigeria's NDPA, and others) regardless of the technical setup.
+- **You can get your contact list banned too**, which affects your personal
+  WhatsApp account.
+
+The pacing logic and the honest comments around it exist because pretending
+this is undetectable would be the more harmful failure.
+
+---
+
+## How it works
+
+1. Register, then set the WhatsApp number your account will link with.
+2. Upload a CSV with a header row. Map which column is the name and which is
+   the phone number.
+3. Fix any rows flagged invalid or missing a country code.
+4. Write a message (`{name}` is replaced per contact), optionally attach media,
+   and choose a send mode.
+5. Start the send. The backend launches a browser, logs into WhatsApp Web, and
+   asks you to confirm the link on your phone.
+6. Progress polls every 3s and stops on its own when the campaign finishes.
+
+### The login handshake
+
+There's no QR scanner. The backend opens WhatsApp Web, selects your country,
+submits your number, and scrapes the 8-character code WhatsApp displays. That
+code appears in the browser overlay — you type it into your phone under
+**Settings → Linked devices → Link a device → Link with phone number
+instead**.
+
+Login state lives in the database, not files in `MEDIA_ROOT`, so it works
+across gunicorn workers and survives a redeploy.
+
+Each user gets their own persistent browser profile, so the link persists
+between campaigns and two people can send at the same time without colliding.
+If a session turns out to be expired, one automatic retry wipes the profile
+and re-links. You can force this manually with
+`POST /api/whatsapp-session/reset/`.
+
+---
+
+## Setup
+
+### Backend
+
+```bash
+cd backend
+python -m venv venv
+venv\Scripts\activate            # Windows
+# source venv/bin/activate       # macOS/Linux
+
+pip install -r requirements.txt
+python -m playwright install chromium
+```
+
+Copy `backend/.env.example` to `backend/.env` — it's loaded automatically.
+Then:
+
+```bash
+python manage.py migrate
+python manage.py runserver
+```
+
+API is on `http://127.0.0.1:8000/api`.
+
+### Frontend
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+App is on `http://localhost:5173`.
+
+No CORS setup is needed locally: the Vite dev server proxies `/api` to
+Django, so the browser only ever talks to one origin.
+
+---
+
+## Configuration
+
+Everything is optional in development. **With `DEBUG=False` the app refuses to
+start unless `SECRET_KEY` and `CRYPTOGRAPHY_KEYS` are real values** — it won't
+silently fall back to the development keys, which were once committed here.
+
+### Encryption
+
+Phone numbers and message bodies are encrypted at rest with Fernet
+(`backend/sender/encryption.py`).
+
+```bash
+python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+```
+
+`CRYPTOGRAPHY_KEYS` is a comma-separated list, **newest first**. The first key
+encrypts; all of them are tried when decrypting. That's what makes rotation
+possible — prepend a new key, then drop the old one later, with no window
+where existing data becomes unreadable.
+
+Losing every key makes all stored data permanently unreadable. Back the list
+up in a password manager.
+
+### Other settings
+
+| Variable | Default | Notes |
+|---|---|---|
+| `DEBUG` | `True` | Must be `False` in production |
+| `ALLOWED_HOSTS` | localhost only | Comma-separated; `*` is rejected when `DEBUG=False` |
+| `CORS_ALLOWED_ORIGINS` | `http://localhost:5173` | Frontend origin(s) |
+| `MAX_MEDIA_BYTES` | 25MB | Per uploaded attachment |
+| `THROTTLE_SEND_QUOTA` | `20000/day` | Contacts one user may queue per day |
+| `THROTTLE_LOGIN` | `10/minute` | Per IP |
+| `REDIS_URL` | unset | Set for shared rate limits; see below |
+| `CAMPAIGN_STALE_AFTER_SECONDS` | `2700` | When an unresponsive send is presumed dead |
+| `WHATSAPP_HEADLESS` | `false` | See "Headless vs headed" |
+| `WHATSAPP_DEBUG` | `false` | Writes screenshots of the automation steps |
+| `SECURE_HSTS_SECONDS` | `0` | Raise once HTTPS is confirmed working |
+
+### Rate limits need a shared cache
+
+Throttle counters are stored in Django's cache. The default here is a local
+**file** cache, which is shared between workers on one box but resets on
+restart. `LocMemCache` is deliberately *not* the default — it's per-process,
+so under gunicorn with N workers every limit silently becomes N times looser
+than configured.
+
+For genuinely shared limits (or multiple hosts), set `REDIS_URL`.
+
+### Headless vs headed
+
+The automation defaults to **headed** mode. WhatsApp Web is unreliable about
+accepting the linked-device handshake from a headless browser, and the phone
+side of the link needs a person anyway. It also prefers a locally installed
+Chrome/Edge/Brave over Playwright's bundled Chromium for the same reason.
+
+This means **this does not run on a typical PaaS host.** There's no display,
+and the Chromium profile lives on an ephemeral filesystem that gets wiped on
+every deploy. Run it on a machine with a desktop session, or over a VNC/RDP
+session on a long-lived box.
+
+`WHATSAPP_DEBUG=true` writes screenshots to `backend/whatsapp_debug/` — a
+separate directory, never `MEDIA_ROOT`, because they capture a logged-in
+WhatsApp session.
+
+---
+
+## API
+
+All endpoints are under `/api`. Auth is a DRF token in the `Authorization`
+header.
+
+| Method | Path | Notes |
+|---|---|---|
+| `POST` | `auth/register/` | Rate limited per IP |
+| `POST` | `auth/login/` | Rate limited per IP |
+| `GET`/`PUT` | `profile/whatsapp-number/` | Validated and normalized |
+| `GET` | `campaigns/` | Paginated history with progress counts |
+| `POST` | `campaigns/create/` | Multipart; rejects the whole request if any number is unusable |
+| `GET` | `campaigns/<id>/status/` | Owner only |
+| `POST` | `campaigns/<id>/start/` | One send per campaign, one per user |
+| `POST` | `campaigns/<id>/retry/` | Returns failed contacts to pending |
+| `DELETE` | `campaigns/<id>/` | Removes the campaign and its files |
+| `GET` | `campaigns/<id>/media/<file_id>/` | Owner only |
+| `GET` | `login-status/` | Current handshake state |
+| `POST` | `whatsapp-session/reset/` | Force a re-link |
+
+### Retrying a failed campaign
+
+`POST /api/campaigns/<id>/retry/` flips `failed` contacts back to `pending`
+and returns the count. It deliberately does **not** restart the send — call
+`/start/` separately, so the usual guards (already sending, daily quota) still
+apply and you can see what happened. Contacts that were already `sent` are
+never touched, so a retry can't re-send to people who already got the message.
+
+### Recovering from a dead worker
+
+A send runs on a thread inside a web worker. If gunicorn recycles that worker,
+the box reboots, or the process is killed, the campaign row stays `running`
+with nothing behind it. Left alone that blocks that user from starting anything
+again, permanently.
+
+The worker writes a heartbeat on every contact. Anything quiet for longer than
+`CAMPAIGN_STALE_AFTER_SECONDS` is presumed dead, marked failed, and its
+unsent contacts settled. This runs automatically before each send attempt; for
+a fully unattended deployment, run the reaper from cron:
+
+```bash
+python manage.py reap_stale_campaigns --dry-run   # report
+python manage.py reap_stale_campaigns             # apply
+python manage.py reap_stale_campaigns --loop      # sidecar process
+```
+
+## Troubleshooting
+
+```bash
+# Do the WhatsApp selectors still match the live page?
+python manage.py whatsapp_preflight --number +2348161234765
+```
+
+The automation matches CSS and text selectors against a third-party UI. When
+WhatsApp changes their login page, the symptom is otherwise a campaign that
+sits for ten minutes and fails with every contact marked failed — telling you
+nothing about why. The preflight checks each selector against the live page in
+about 30 seconds and names the one that broke. It uses a throwaway profile and
+never touches a linked session.
+
+Set `WHATSAPP_DEBUG=true` to have it also save screenshots of each step.
+
+Errors are always `{"error": "...", "code": "..."}` so the client can show the
+real message and branch on the code.
+
+**Campaign creation rejects rather than silently dropping contacts.** If any
+number is unusable it returns `400` with `rejected_count` and examples. The
+original behaviour created the campaign from whatever validated and said
+nothing about the rest, so you watched a progress bar for a smaller list with
+no idea numbers had disappeared.
+
+**Campaign media is never served from `MEDIA_ROOT` directly.** It streams
+through an ownership-checked endpoint. Serving `MEDIA_ROOT` with `static()` —
+as this used to do — exposed every uploaded photo to anyone who could guess
+the filename.
+
+---
+
+## Tests
+
+```bash
+# Backend — 246 tests
+cd backend
+python manage.py test sender --settings=config.settings_test
+
+# Frontend — 104 tests
+cd frontend
+npm test
+npm run lint
+```
+
+### Smoke test
+
+Unit tests use Django's test client, so they don't exercise the real HTTP
+stack, middleware or SQLite. This does:
+
+```bash
+# terminal 1
+set WHATSAPP_DISABLE_AUTOMATION=true    # Windows; export on macOS/Linux
+python manage.py runserver 127.0.0.1:8777 --noreload
+
+# terminal 2
+python smoke.py
+```
+
+29 checks over the whole API: registration, phone validation, campaign
+creation (including that a rejected campaign persists nothing), progress
+counts, cross-user isolation on every endpoint, and the send guards.
+
+`WHATSAPP_DISABLE_AUTOMATION=true` is required. Without it the send path opens
+a real browser at web.whatsapp.com, which is slow, needs a display, and looks
+like abuse to WhatsApp. With it set, contacts are marked sent without any
+network call — so you can exercise the send flow safely. It logs a warning
+every time it's used.
+
+The backend uses a separate settings module because Django's default PBKDF2
+hasher costs ~0.5s per hash and this suite creates users constantly.
+
+Browser automation is tested against a fake Playwright rather than a real
+browser. The actual UI interaction can't be asserted in CI, but everything
+around it can: session reuse, the retry-after-wipe path, pacing, phone-entry
+fallbacks, and status settling.
+
+---
+
+## Layout
+
+```
+backend/
+  config/settings.py         env loading, production guards, cache, throttling
+  sender/
+    models.py                Campaign, Contact, WhatsAppLoginState, quota
+    encryption.py            Fernet fields with key rotation
+    phone_numbers.py         validation, normalization, country resolution
+    views.py                 auth, profile, create, status, media, start
+    campaigns.py             list, retry, delete
+    reliability.py           stale-send detection and recovery
+    whatsapp_automation.py   Playwright driver
+    throttles.py             auth and send-start limits
+    management/commands/
+      whatsapp_preflight.py  verify selectors against the live page
+      reap_stale_campaigns.py recover from dead workers
+    tests/
+frontend/
+  src/api.js                 single fetch layer with real error handling
+  src/utils/phone.js         client-side validation via libphonenumber-js
+  src/components/            UI, including CampaignList for history
+```
+
+---
+
+## Known limitations
+
+- **Requires a desktop session.** See "Headless vs headed" above.
+- **Fragile against WhatsApp changes.** The selectors are matched against a
+  third-party UI. Run `manage.py whatsapp_preflight` when a send breaks
+  unexpectedly — it names the broken selector instead of leaving you with a
+  ten-minute timeout and a failed list.
+- **No delivery receipts.** "sent" means the send button was clicked, not that
+  the message was delivered or read.
+- **SQLite only.** `DATABASE_PATH` is configurable, but the concurrency here
+  assumes a single writer.
+- **No scheduled campaigns.** Sends start when you press the button.
+- **Retry is per-campaign, not selective.** You can't retry just the failures
+  from a specific day or subset — every `failed` contact comes back.
+- **Rate limits are per-process unless you set `REDIS_URL`.** The file-cache
+  default is shared between workers on one box, but not across hosts.
+- **Login codes are stored in plaintext** in `WhatsAppLoginState`. They're
+  only useful for the few minutes before the device is linked, and encrypting
+  them would buy nothing against an attacker who can already read the row.

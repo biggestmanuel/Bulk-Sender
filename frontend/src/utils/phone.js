@@ -17,6 +17,11 @@ export function classifyPhone(phone) {
   const raw = (phone ?? '').trim()
   if (!raw) return { status: 'invalid', e164: null }
 
+  // Wildcards ("+234****765") can't be dialled and aren't a number that
+  // merely lacks a country code. Sending these to the country picker would
+  // produce a confusing "still invalid" message after the user does the work.
+  if (raw.includes('*')) return { status: 'invalid', e164: null }
+
   if (!raw.startsWith('+')) {
     return { status: 'needs-country', e164: null }
   }
