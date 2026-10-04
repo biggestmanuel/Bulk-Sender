@@ -523,6 +523,27 @@ def _send_to_contact(page, contact, message_text, media_paths, delay_mode):
         return False
 
 
+def _browser_is_alive(page):
+    """
+    Cheap check for a browser that has died underneath us.
+
+    Distinguishes "this one message failed" — a per-contact problem worth
+    carrying on from — from "the browser is finished", where every remaining
+    contact would fail the same way, slowly. page.title() touches neither the
+    network nor the DOM; it only fails if the page, context or browser process
+    is gone, which is the condition we care about.
+
+    Erring towards False is the safe direction: it stops the loop early and
+    settles the remainder as failed, so the campaign ends as failed and can be
+    retried. Erring towards True costs hours of timeouts against a corpse.
+    """
+    try:
+        page.title()
+    except Exception:
+        return False
+    return True
+
+
 def _mark_all(contacts, on_progress, status_value):
     """
     Settles every remaining contact's status.
@@ -755,6 +776,32 @@ def _one_pass(
                 else:
                     failed += 1
                     on_progress(contact['id'], 'failed')
+
+                    if not _browser_is_alive(page):
+                        # The browser died (OOM, killed tab). Carrying on would
+                        # burn the full per-contact timeout — up to 210s of
+                        # goto() plus wait_for_selector() — against a corpse,
+                        # once per remaining contact. On a 500-contact list that
+                        # is most of a day holding a worker thread, and because
+                        # on_progress still fires the heartbeat stays fresh so
+                        # the stale-campaign reaper never rescues it.
+                        logger.error(
+                            'Browser died for user %s after %s of %s contact(s) '
+                            'were attempted (%s sent); settling the remaining %s '
+                            'rather than failing each one slowly',
+                            user_id, index + 1, len(contacts), sent,
+                            len(contacts) - sent,
+                        )
+                        _mark_all(
+                            [c for c in contacts if c['id'] not in sent_ids],
+                            on_progress, 'failed',
+                        )
+                        on_login_failed()
+                        return {
+                            'sent': sent,
+                            'failed': len(contacts) - sent,
+                            'logged_in': False,
+                        }
 
                 next_long_break_at = _sleep_between_messages(
                     delay_seconds, index + 1, next_long_break_at

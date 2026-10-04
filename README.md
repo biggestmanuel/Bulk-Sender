@@ -224,6 +224,18 @@ attempted at all, which is the login-failure case. When this happens the
 campaign ends as `failed` with the delivered contacts left `sent`, so a manual
 `/retry/` picks up only the ones that were genuinely missed.
 
+A dead browser is detected rather than waited out. Each failed send is
+followed by a cheap liveness probe, and once the browser is gone the send
+stops immediately instead of working through the rest of the list. That
+matters because a dead browser fails *every* remaining contact, and each one
+costs the full navigation timeout — minutes per contact, and the campaign
+would sit there looking busy for hours. The log line naming the count is:
+
+```
+Browser died for user 5 after 2 of 500 contact(s) were attempted (1 sent);
+settling the remaining 498 rather than failing each one slowly
+```
+
 ### Recovering from a dead worker
 
 A send runs on a thread inside a web worker. If gunicorn recycles that worker,

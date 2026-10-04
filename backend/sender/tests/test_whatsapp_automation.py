@@ -90,6 +90,8 @@ class FakePage:
         self.locators = {}
         self.goto_urls = []
         self.screenshots = []
+        # Flipped by tests that model a browser dying mid-campaign.
+        self.dead = False
 
     def show(self, selector, text=''):
         """Registers a visible element for a selector."""
@@ -134,6 +136,18 @@ class FakePage:
 
     def screenshot(self, path=None):
         self.screenshots.append(path)
+
+    def title(self):
+        """
+        Models a live page for _browser_is_alive().
+
+        A real browser raises here once its process is gone, which is the
+        signal the send loop uses to stop early. Set `dead = True` to model
+        the crash.
+        """
+        if self.dead:
+            raise AssertionError('Target page, context or browser has been closed')
+        return self.body_text
 
     def expect_file_chooser(self):
         raise AssertionError('file chooser not expected in this test')
@@ -215,12 +229,10 @@ def login_page(body_text='', country_options=(), phone_rejects=()):
     return page
 
 
-def logged_in_page():
-    """A page already past the handshake, with a working send button."""
-    page = FakePage(body_text='chats')
-    page.show(CHAT_LIST)
-    page.show(SEND_ICON)
-    return page
+# NOTE: logged_in_page() is defined once, further down, next to the send
+# orchestration tests that use it. It used to be defined here too, without
+# SEND_ICON_VISIBLE — so the copy down below silently shadowed it. Nothing
+# caught it because the shadowed version was unreachable, not wrong.
 
 
 # --- Pacing ---------------------------------------------------------------
@@ -447,6 +459,37 @@ def logged_in_page():
     page.show(SEND_ICON)
     page.show(SEND_ICON_VISIBLE)
     return page
+
+
+class DyingBrowserPage(FakePage):
+    """
+    A logged-in page whose browser process dies after N successful sends.
+
+    Models the real failure: an OOM kill or a killed tab. Every later send
+    fails because the page is gone, and `title()` — the liveness probe the
+    send loop uses — raises, exactly as Playwright does for a closed target.
+
+    `send_attempts` counts how many contacts were actually attempted, which is
+    what distinguishes stopping early from grinding through the remainder.
+    """
+
+    def __init__(self, die_after=1):
+        super().__init__(body_text='chats')
+        self.show(CHAT_LIST)
+        self.show(SEND_ICON)
+        self.show(SEND_ICON_VISIBLE)
+        self.die_after = die_after
+        self.send_attempts = 0
+
+    def goto(self, url, timeout=None):
+        if '/send?phone=' in url:
+            self.send_attempts += 1
+            if self.send_attempts > self.die_after:
+                self.dead = True
+                from playwright.sync_api import Error as PlaywrightError
+
+                raise PlaywrightError('Target page, context or browser has been closed')
+        return super().goto(url, timeout=timeout)
 
 
 class SendOrchestrationTests(SimpleTestCase):
@@ -876,6 +919,118 @@ class CrashSettlementTests(SimpleTestCase):
             legacy_filter, contacts,
             'the legacy filter is a no-op, which is why sent_ids replaced it',
         )
+
+
+class DeadBrowserTests(SimpleTestCase):
+    """
+    A browser that dies mid-campaign must stop the send, not limp on.
+
+    Two things went wrong here. The loop carried on after the browser died,
+    burning the full per-contact timeout (goto 120s + wait_for_selector 90s)
+    once for every remaining contact — on a 500-contact list, most of a day
+    holding a worker thread — and because on_progress still fired, the
+    heartbeat stayed fresh so the stale-campaign reaper never intervened.
+    And the run returned logged_in=True, so the campaign was recorded as
+    COMPLETED rather than failed.
+    """
+
+    def setUp(self):
+        import tempfile
+        from pathlib import Path
+
+        self._tmp = tempfile.TemporaryDirectory()
+        patcher = mock.patch.object(wa, 'SESSIONS_DIR', Path(self._tmp.name))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.addCleanup(self._tmp.cleanup)
+
+    def run_dying(self, die_after=1, contact_count=5):
+        page = DyingBrowserPage(die_after=die_after)
+        statuses = []
+        factory, holder = fake_playwright(page)
+
+        with mock.patch.dict('os.environ', {'WHATSAPP_HEADLESS': 'true'}), \
+             mock.patch('sender.whatsapp_automation.time.sleep'):
+            result = wa.send_whatsapp_messages(
+                contacts=[
+                    {'id': i, 'name': f'C{i}', 'phone': f'+234816123476{i}'}
+                    for i in range(1, contact_count + 1)
+                ],
+                message_text='hi',
+                user_id=55,
+                whatsapp_number='+2348161234765',
+                delay_seconds=wa.INSTANT_DELAY_SECONDS,
+                playwright_factory=factory,
+                on_progress=lambda cid, status: statuses.append((cid, status)),
+            )
+        return result, statuses, page, holder
+
+    def test_stops_instead_of_failing_every_remaining_contact(self):
+        """
+        The core assertion. One send succeeds, the browser dies, and only the
+        contact that triggered the death is attempted — the other three are
+        never touched. Before the fix all five were attempted, each paying the
+        full timeout against a dead browser.
+        """
+        _, _, page, _ = self.run_dying(die_after=1, contact_count=5)
+
+        self.assertEqual(
+            page.send_attempts, 2,
+            'expected the browser to be abandoned after the failed send, not '
+            'worked through the rest of the list',
+        )
+
+    def test_campaign_is_not_reported_as_logged_in(self):
+        """
+        logged_in=True made views mark the campaign COMPLETED, which told the
+        user a dead browser had finished the job.
+        """
+        result, _, _, _ = self.run_dying()
+
+        self.assertFalse(result['logged_in'])
+
+    def test_delivered_contact_stays_sent_and_the_rest_are_settled(self):
+        _, statuses, _, _ = self.run_dying(die_after=1, contact_count=5)
+
+        self.assertIn((1, 'sent'), statuses)
+        self.assertNotIn(
+            (1, 'failed'), statuses,
+            'a delivered contact must never be rewritten, or retry_campaign '
+            'would send it a second time',
+        )
+        for contact_id in (2, 3, 4, 5):
+            self.assertIn((contact_id, 'failed'), statuses)
+
+    def test_reports_true_counts(self):
+        result, _, _, _ = self.run_dying(die_after=1, contact_count=5)
+
+        self.assertEqual(result['sent'], 1)
+        self.assertEqual(result['failed'], 4)
+
+    def test_never_retries_after_delivering_something(self):
+        """
+        The property that makes aborting safe: a dead browser after a partial
+        send must not trigger the re-link-and-resend path.
+        """
+        with mock.patch.object(wa, '_one_pass', wraps=wa._one_pass) as one_pass:
+            self.run_dying(die_after=1, contact_count=5)
+
+        self.assertEqual(
+            one_pass.call_count, 1,
+            'a partially delivered campaign must not be re-sent',
+        )
+
+    def test_live_browser_failures_do_not_stop_the_run(self):
+        """
+        The abort must key on a dead browser, not on a failed send. A single
+        undeliverable message is routine and the run should carry on.
+        """
+        result, statuses, page, _ = self.run_dying(die_after=99, contact_count=3)
+
+        self.assertEqual(page.send_attempts, 3, 'every contact should be attempted')
+        self.assertTrue(result['logged_in'])
+        self.assertEqual(result['sent'], 3)
+        self.assertNotIn('failed', [s for _, s in statuses])
 
 
 class SessionDirTests(SimpleTestCase):
