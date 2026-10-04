@@ -56,12 +56,23 @@ function route(routes) {
   return calls
 }
 
+/**
+ * Advances past the longest poll delay (30s), so exactly one poll fires per
+ * call regardless of where the backoff currently sits.
+ */
 async function advancePolls(times) {
   for (let i = 0; i < times; i++) {
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(3100)
+      await vi.advanceTimersByTimeAsync(31000)
     })
   }
+}
+
+/** Advances in small slices, for asserting the backoff schedule itself. */
+async function advanceBy(totalMs) {
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(totalMs)
+  })
 }
 
 async function uploadCsv(user, contents = VALID_CSV) {
@@ -220,6 +231,49 @@ describe('App campaign status polling', () => {
     const settled = calls['GET /api/campaigns/42/status/']
     await advancePolls(5)
     expect(calls['GET /api/campaigns/42/status/']).toBe(settled)
+  })
+
+  /**
+   * A 5,000-contact campaign in delay mode runs for hours. Polling every 3
+   * seconds throughout would be over 16,000 requests and exhaust the API's
+   * polling budget, freezing the progress panel on a send that was still
+   * running. The interval doubles up to a 30s ceiling.
+   */
+  it('backs off the polling interval over time', async () => {
+    const calls = route({
+      '/campaigns/create/': respond({ id: 42 }, 201),
+      '/campaigns/42/start/': respond({ message: 'started' }, 202),
+      '/campaigns/42/status/': respond(statusBody()),
+      '/login-status/': respond({ phase: 'idle', code_ready: false, login_code: null }),
+      '/campaigns/': respond({ campaigns: [], total: 0 }),
+      '/profile/whatsapp-number/': respond({ whatsapp_number: '+2348161234765' }),
+    })
+
+    const user = setupUser()
+    render(<App />)
+    await reachStartButton(user)
+    await user.click(screen.getByRole('button', { name: /start sending/i }))
+
+    await waitFor(() => expect(calls['GET /api/campaigns/42/status/']).toBe(1))
+
+    // First gap is 3s.
+    await advanceBy(3100)
+    expect(calls['GET /api/campaigns/42/status/']).toBe(2)
+
+    // Second gap has doubled to 6s: nothing at 4s, something by 10s.
+    await advanceBy(4000)
+    expect(calls['GET /api/campaigns/42/status/']).toBe(2)
+    await advanceBy(3000)
+    expect(calls['GET /api/campaigns/42/status/']).toBe(3)
+
+    // It settles at the 30s ceiling rather than growing without bound.
+    for (let i = 0; i < 12; i++) {
+      await advancePolls(1)
+    }
+    await advanceBy(10000)
+    const atCeiling = calls['GET /api/campaigns/42/status/']
+    await advanceBy(25000)
+    expect(calls['GET /api/campaigns/42/status/']).toBe(atCeiling + 1)
   })
 
   it('survives a transient poll failure', async () => {

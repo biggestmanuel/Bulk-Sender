@@ -1,6 +1,10 @@
+import logging
+
 from rest_framework import serializers
 
 from .models import Campaign, Contact, MediaFile, UserProfile, WhatsAppLoginState
+
+logger = logging.getLogger(__name__)
 
 
 class ContactSerializer(serializers.ModelSerializer):
@@ -27,7 +31,16 @@ class MediaFileSerializer(serializers.ModelSerializer):
     def get_size(self, obj):
         try:
             return obj.file.size
-        except Exception:
+        except (OSError, ValueError) as exc:
+            # ValueError: the row has no file. OSError: the row points at a
+            # file that isn't there, which happens on any host with an
+            # ephemeral MEDIA_ROOT. Both are worth a log line — this used to
+            # be a bare `except Exception`, which swallowed the distinction
+            # and made missing media look like a zero-byte attachment.
+            logger.warning(
+                'Could not determine size of media %s (%s): %s',
+                obj.pk, obj.file.name, exc,
+            )
             return None
 
 

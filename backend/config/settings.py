@@ -254,6 +254,17 @@ REST_FRAMEWORK = {
     'DEFAULT_THROTTLE_RATES': {
         'anon': env_list('THROTTLE_ANON', default=['60/hour'])[0],
         'user': env_list('THROTTLE_USER', default=['600/hour'])[0],
+        # Polling endpoints need their own budgets.
+        #
+        # The progress view polls campaign status every 3s (1,200/hour) and
+        # the login overlay polls every 2s (1,800/hour). Both inherited the
+        # 600/hour 'user' rate above, so a send lasting about half an hour
+        # would start returning 429 and the progress panel would freeze
+        # mid-campaign — the send itself kept running, so it looked like the
+        # app had simply lost track. These ceilings sit above the client's
+        # polling rate with headroom for a couple of tabs.
+        'status': env_list('THROTTLE_STATUS', default=['2400/hour'])[0],
+        'login_status': env_list('THROTTLE_LOGIN_STATUS', default=['3600/hour'])[0],
         'login': env_list('THROTTLE_LOGIN', default=['10/minute'])[0],
         'register': env_list('THROTTLE_REGISTER', default=['5/hour'])[0],
         'send_start': env_list('THROTTLE_SEND_START', default=['30/hour'])[0],

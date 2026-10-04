@@ -27,6 +27,7 @@ from .reliability import reap_stale_campaigns
 from .serializers import CampaignListSerializer
 from .throttles import CampaignCreateThrottle
 
+
 logger = logging.getLogger(__name__)
 
 # Enough history to be useful without making the response unbounded. A user
@@ -57,8 +58,13 @@ def list_campaigns(request):
     Counts come from a single grouped query with conditional aggregation
     rather than loading every contact. With 5,000 contacts across many
     campaigns, the naive version decrypted the entire contact table.
+
+    Also reaps stale sends before listing, so a campaign orphaned by a dead
+    worker shows as failed rather than "sending" indefinitely.
     """
     page, page_size = _pagination_params(request)
+
+    reap_stale_campaigns(owner=request.user)
 
     queryset = (
         Campaign.objects.filter(owner=request.user)
@@ -167,6 +173,13 @@ def delete_campaign(request, campaign_id):
             {'error': 'Campaign not found.', 'code': 'not_found'},
             status=status.HTTP_404_NOT_FOUND,
         )
+
+    # Reap first. Without this, a campaign orphaned by a dead worker stays
+    # 'running' until something else triggers recovery, and every delete
+    # attempt returns 409 — the same permanent lockout that retry_campaign and
+    # start_sending already guard against.
+    reap_stale_campaigns(owner=request.user)
+    campaign.refresh_from_db()
 
     if campaign.status in Campaign.IN_FLIGHT_STATUSES:
         return Response(

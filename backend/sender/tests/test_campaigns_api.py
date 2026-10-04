@@ -74,6 +74,35 @@ class ListCampaignsTests(APITestCase):
         self.assertEqual(response.data['campaigns'], [])
         self.assertEqual(response.data['total'], 0)
 
+    def test_orphaned_campaign_is_listed_as_failed_not_sending(self):
+        """
+        The list is where a user would notice a send that never recovered, so
+        it has to agree with reality rather than showing "sending" forever.
+        """
+        campaign = self.make_campaign(
+            self.user, statuses=['pending'], status=Campaign.Status.RUNNING
+        )
+        Campaign.objects.filter(pk=campaign.pk).update(
+            last_heartbeat_at=timezone.now() - timedelta(seconds=60 * 60)
+        )
+
+        response = self.client.get('/api/campaigns/')
+
+        row = next(c for c in response.data['campaigns'] if c['id'] == campaign.pk)
+        self.assertEqual(row['status'], 'failed')
+        self.assertTrue(row['can_retry'], 'the unsent contacts should be retryable')
+
+    def test_a_live_send_is_still_shown_as_sending(self):
+        campaign = self.make_campaign(
+            self.user, statuses=['pending'], status=Campaign.Status.RUNNING
+        )
+        Campaign.objects.filter(pk=campaign.pk).update(last_heartbeat_at=timezone.now())
+
+        response = self.client.get('/api/campaigns/')
+
+        row = next(c for c in response.data['campaigns'] if c['id'] == campaign.pk)
+        self.assertEqual(row['status'], 'running')
+
     def test_lists_campaigns_newest_first(self):
         """
         Ordering is asserted by explicitly distinct timestamps: created_at is
@@ -373,6 +402,35 @@ class DeleteTests(APITestCase):
     def test_missing_campaign_is_404(self):
         response = self.client.delete('/api/campaigns/999999/')
         self.assertEqual(response.status_code, 404)
+
+    def test_orphaned_campaign_can_be_deleted(self):
+        """
+        A campaign whose worker died stays 'running' until something triggers
+        recovery. Without reaping on the delete path, every attempt returned
+        409 forever — the same permanent lockout that retry_campaign already
+        guards against.
+        """
+        campaign = self.make_campaign(
+            self.user, statuses=['pending'], status=Campaign.Status.RUNNING
+        )
+        Campaign.objects.filter(pk=campaign.pk).update(
+            last_heartbeat_at=timezone.now() - timedelta(seconds=60 * 60)
+        )
+
+        response = self.client.delete(f'/api/campaigns/{campaign.pk}/')
+
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(Campaign.objects.filter(pk=campaign.pk).exists())
+
+    def test_a_live_campaign_is_still_protected(self):
+        campaign = self.make_campaign(
+            self.user, statuses=['pending'], status=Campaign.Status.RUNNING
+        )
+        Campaign.objects.filter(pk=campaign.pk).update(last_heartbeat_at=timezone.now())
+
+        response = self.client.delete(f'/api/campaigns/{campaign.pk}/')
+
+        self.assertEqual(response.status_code, 409)
 
     def test_requires_authentication(self):
         campaign = self.make_campaign(self.user, statuses=['sent'])

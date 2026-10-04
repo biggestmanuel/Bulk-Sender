@@ -30,5 +30,11 @@ export default defineConfig({
     setupFiles: ['./src/test/setup.js'],
     include: ['src/**/*.test.{js,jsx}'],
     css: false,
+    // Vitest's own default is 5s per test. With ten files running in
+    // parallel, a loaded machine can exceed that on tests that legitimately
+    // wait on several renders, and the suite became flaky for reasons that
+    // had nothing to do with the code under test.
+    testTimeout: 20000,
+    hookTimeout: 20000,
   },
 })

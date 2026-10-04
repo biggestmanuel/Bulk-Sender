@@ -19,6 +19,12 @@ import WhatsAppNumberSettings from './components/WhatsAppNumberSettings'
 import { classifyPhone } from './utils/phone'
 
 const POLL_INTERVAL_MS = 3000
+// Internal heartbeat; the actual request only fires when the backoff gap has
+// elapsed, so this only controls how promptly we notice that it has.
+const POLL_HEARTBEAT_MS = 1000
+// Ceiling for the backoff. A 30s cadence costs ~120 requests/hour for a
+// long-running send, comfortably inside the API's polling budget.
+const MAX_POLL_INTERVAL_MS = 30000
 
 function App() {
   const [isAuthenticated, setIsAuthenticated] = useState(() =>
@@ -80,6 +86,8 @@ function App() {
     if (!campaignId || isFinished) return undefined
 
     let cancelled = false
+    let gapMs = POLL_INTERVAL_MS
+    let lastFetchAt = 0
 
     const poll = async () => {
       try {
@@ -92,8 +100,27 @@ function App() {
       }
     }
 
+    const tick = async () => {
+      // A fixed heartbeat decides whether enough time has passed to actually
+      // ask the server. Delay mode on a 5,000-contact campaign runs for
+      // hours; polling every 3 seconds throughout would be over 16,000
+      // requests — wasteful, and enough to exhaust the API's polling budget
+      // and freeze the progress panel on a send that was still running.
+      // Early on the counters move fast enough to be worth the tight gap;
+      // once the send is clearly underway, a longer one loses nothing
+      // visible.
+      const now = Date.now()
+      if (now - lastFetchAt < gapMs) return
+
+      lastFetchAt = now
+      gapMs = Math.min(gapMs * 2, MAX_POLL_INTERVAL_MS)
+      await poll()
+    }
+
+    // Immediate first poll, then a 1s heartbeat.
+    lastFetchAt = Date.now()
     poll()
-    const timer = setInterval(poll, POLL_INTERVAL_MS)
+    const timer = setInterval(tick, POLL_HEARTBEAT_MS)
 
     return () => {
       cancelled = true

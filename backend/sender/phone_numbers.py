@@ -179,7 +179,10 @@ def country_for(raw):
             if region:
                 name = _region_display_name(parsed, region)
                 return name, str(parsed.country_code)
-        except Exception:
+        except NumberParseException:
+            # Already validated by to_e164() on the way in; this only guards
+            # against a library edge case. Narrowed from `except Exception`
+            # so a typo'd attribute name can't be masked as "unknown country".
             pass
         return None, ''
 

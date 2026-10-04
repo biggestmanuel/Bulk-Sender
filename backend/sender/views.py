@@ -50,7 +50,14 @@ from .models import Campaign, Contact, DailySendQuota, MediaFile, UserProfile, W
 from .phone_numbers import PhoneValidationError, to_e164
 from .reliability import reap_stale_campaigns
 from .serializers import CampaignSerializer, UserProfileSerializer
-from .throttles import CampaignCreateThrottle, LoginRateThrottle, RegisterRateThrottle, SendStartThrottle
+from .throttles import (
+    CampaignCreateThrottle,
+    LoginRateThrottle,
+    LoginStatusPollThrottle,
+    RegisterRateThrottle,
+    SendStartThrottle,
+    StatusPollThrottle,
+)
 from .whatsapp_automation import send_whatsapp_messages
 
 logger = logging.getLogger(__name__)
@@ -375,6 +382,7 @@ def _validate_media(files):
 
 
 @api_view(['GET'])
+@throttle_classes([StatusPollThrottle])
 def get_campaign_status(request, campaign_id):
     try:
         campaign = Campaign.objects.get(id=campaign_id, owner=request.user)
@@ -439,6 +447,7 @@ def serve_media_file(request, campaign_id, file_id):
 
 
 @api_view(['GET'])
+@throttle_classes([LoginStatusPollThrottle])
 def get_login_status(request):
     """
     The current state of this user's WhatsApp handshake.

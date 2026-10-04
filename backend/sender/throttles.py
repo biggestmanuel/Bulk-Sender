@@ -57,6 +57,30 @@ class CampaignCreateThrottle(_RateFromSettings, UserRateThrottle):
     rate_setting = 'user'
 
 
+class StatusPollThrottle(_RateFromSettings, UserRateThrottle):
+    """
+    Budget for the campaign status endpoint.
+
+    The frontend polls this every 3 seconds while a send is running, which is
+    1,200 requests per hour. Under the default 600/hour 'user' rate a send of
+    about half an hour would start returning 429, freezing the progress panel
+    while the send carried on in the background.
+    """
+
+    rate = '2400/hour'
+    rate_setting = 'status'
+
+
+class LoginStatusPollThrottle(_RateFromSettings, UserRateThrottle):
+    """
+    Budget for the login-status endpoint, polled every 2 seconds (1,800/hour)
+    for the duration of the phone-link handshake, which can take ten minutes.
+    """
+
+    rate = '3600/hour'
+    rate_setting = 'login_status'
+
+
 class SendStartThrottle(_RateFromSettings, UserRateThrottle):
     rate = '30/hour'
     rate_setting = 'send_start'
