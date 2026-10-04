@@ -238,6 +238,139 @@ class FailurePathTests(WorkerTestCase):
         self.assertEqual(other_campaign.status, Campaign.Status.DRAFT)
 
 
+class NoSecondDeliveryTests(TestCase):
+    """
+    The end-to-end guarantee, through the real database.
+
+    The duplicate-delivery rules are each unit-tested in isolation — the retry
+    guard in test_whatsapp_automation, the crash settlement, and retry_campaign
+    leaving sent contacts alone in test_campaigns_api. None of them crosses the
+    seams, and this project's worst outcome is a real person receiving the same
+    message twice. So this drives the whole path: a send that delivers one
+    contact and then dies, the worker's bookkeeping, the retry endpoint, and a
+    second start.
+
+    If any layer ever re-queues a delivered contact, this fails.
+    """
+
+    def setUp(self):
+        from django.core.cache import cache
+
+        from sender import views
+        from rest_framework.authtoken.models import Token
+        from rest_framework.test import APIClient
+
+        cache.clear()
+        views._active_sends.clear()
+
+        self.user = User.objects.create_user('alice', password='pw')
+        UserProfile.objects.create(user=self.user, whatsapp_number='+2348161234765')
+        self.client = APIClient()
+        self.client.credentials(
+            HTTP_AUTHORIZATION=f'Token {Token.objects.create(user=self.user).key}'
+        )
+
+        self.campaign = Campaign.objects.create(
+            owner=self.user, name='c', message_text='Hi {name}', send_mode='delay'
+        )
+        self.contacts = [
+            Contact.objects.create(
+                campaign=self.campaign, name=f'C{i}', phone=f'+23481612347{i:02d}'
+            )
+            for i in range(3)
+        ]
+
+    def crash_after_first_delivery(self, **kwargs):
+        """
+        A send that delivers contact 1, fails contact 2, never reaches
+        contact 3, and reports the browser gone.
+        """
+        def fake_send(**send_kwargs):
+            progress = send_kwargs['on_progress']
+            progress(self.contacts[0].pk, 'sent')
+            progress(self.contacts[1].pk, 'failed')
+            return {'sent': 1, 'failed': 1, 'logged_in': False}
+
+        with mock.patch('sender.views.send_whatsapp_messages', side_effect=fake_send):
+            run_campaign_send(self.campaign.pk, self.user.pk)
+
+    def statuses(self):
+        return dict(
+            Contact.objects.filter(campaign=self.campaign).values_list('pk', 'status')
+        )
+
+    def test_a_crash_leaves_the_delivered_contact_sent(self):
+        self.crash_after_first_delivery()
+
+        self.assertEqual(
+            self.statuses()[self.contacts[0].pk], 'sent',
+            'a delivered contact must stay sent after the browser dies',
+        )
+
+    def test_a_crash_marks_the_campaign_failed_not_completed(self):
+        self.crash_after_first_delivery()
+
+        self.campaign.refresh_from_db()
+        self.assertEqual(self.campaign.status, Campaign.Status.FAILED)
+
+    def test_nothing_is_left_pending_after_a_crash(self):
+        """Otherwise the progress bar spins forever instead of finishing."""
+        self.crash_after_first_delivery()
+
+        self.assertNotIn('pending', self.statuses().values())
+
+    def test_retry_never_requeues_a_delivered_contact(self):
+        """
+        The seam this test exists for. retry_campaign flips failed back to
+        pending; if it ever did that to a sent contact, the next start would
+        message someone who already got the message.
+        """
+        self.crash_after_first_delivery()
+
+        response = self.client.post(f'/api/campaigns/{self.campaign.pk}/retry/')
+
+        self.assertEqual(response.status_code, 200)
+        statuses = self.statuses()
+        self.assertEqual(
+            statuses[self.contacts[0].pk], 'sent',
+            'retry handed an already-delivered contact back for sending',
+        )
+
+    def test_retry_requeues_exactly_the_missed_contacts(self):
+        self.crash_after_first_delivery()
+        self.client.post(f'/api/campaigns/{self.campaign.pk}/retry/')
+
+        statuses = self.statuses()
+        self.assertEqual(statuses[self.contacts[1].pk], 'pending')
+        self.assertEqual(statuses[self.contacts[2].pk], 'pending')
+
+    def test_second_start_sends_only_the_missed_contacts(self):
+        """
+        The last seam: /start/ must hand the automation only what is pending,
+        so a delivered contact is never passed to the browser again.
+        """
+        self.crash_after_first_delivery()
+        self.client.post(f'/api/campaigns/{self.campaign.pk}/retry/')
+
+        captured = {}
+
+        def capture_send(**send_kwargs):
+            captured['ids'] = [c['id'] for c in send_kwargs['contacts']]
+            return {'sent': len(send_kwargs['contacts']), 'failed': 0, 'logged_in': True}
+
+        with mock.patch('sender.views.send_whatsapp_messages', side_effect=capture_send):
+            run_campaign_send(self.campaign.pk, self.user.pk)
+
+        self.assertNotIn(
+            self.contacts[0].pk, captured['ids'],
+            'a delivered contact was passed to the browser a second time',
+        )
+        self.assertEqual(
+            sorted(captured['ids']),
+            sorted([self.contacts[1].pk, self.contacts[2].pk]),
+        )
+
+
 class ProgressTests(TestCase):
     def setUp(self):
         self.user = User.objects.create_user('alice', password='pw')
