@@ -653,6 +653,22 @@ def send_whatsapp_messages(
         if result['logged_in'] or attempt >= SESSION_RETRIES:
             return result
 
+        # Retry ONLY when nothing was attempted.
+        #
+        # A browser crash part-way through returns logged_in=False along with
+        # a non-zero 'sent' count. Re-running the full contact list there
+        # would deliver a second message to everyone already reached — the
+        # most harmful thing this module could do. Re-linking only helps
+        # when we never got as far as sending, which is the login-failure
+        # case.
+        if result['sent']:
+            logger.error(
+                'Not retrying for user %s: %s contact(s) were already sent, '
+                'so a retry would duplicate them.',
+                user_id, result['sent'],
+            )
+            return result
+
         logger.info('Session for user %s was not linked; retrying', user_id)
 
     return {'sent': 0, 'failed': len(contacts), 'logged_in': False}
@@ -679,6 +695,10 @@ def _one_pass(
 
     sent = 0
     failed = 0
+    # Ids already reported as delivered. The crash handler below needs to
+    # know *which* contacts were sent, not just how many, and the only
+    # reliable record of that is the set we build as we go.
+    sent_ids = set()
 
     with playwright_factory() as playwright:
         context = None
@@ -730,6 +750,7 @@ def _one_pass(
             for index, contact in enumerate(contacts):
                 if _send_to_contact(page, contact, message_text, media_paths, delay_mode):
                     sent += 1
+                    sent_ids.add(contact['id'])
                     on_progress(contact['id'], 'sent')
                 else:
                     failed += 1
@@ -745,11 +766,21 @@ def _one_pass(
             # A crashed browser (OOM, killed tab) shouldn't leave the whole
             # campaign looking like it never ran.
             logger.error('Browser error mid-send for user %s: %s', user_id, exc)
+            # Settle only what never got a turn.
+            #
+            # The filter used to be `c.get('status') != 'sent'`, which read a
+            # key that isn't there: contacts arrive as {'id', 'name', 'phone'}
+            # (see views.run_campaign_send), so .get() returned None for all of
+            # them, nothing was filtered out, and every contact — including the
+            # ones already reported sent above — was re-settled as 'failed'.
+            # That overwrote delivered rows, so retry_campaign then handed them
+            # back as pending and the next run delivered a second message to
+            # people who had already received one.
             _mark_all(
-                [c for c in contacts if c.get('status') != 'sent'], on_progress, 'failed'
+                [c for c in contacts if c['id'] not in sent_ids], on_progress, 'failed'
             )
             on_login_failed()
-            return {'sent': sent, 'failed': failed + (len(contacts) - sent - failed), 'logged_in': False}
+            return {'sent': sent, 'failed': len(contacts) - sent, 'logged_in': False}
         finally:
             if context is not None:
                 try:

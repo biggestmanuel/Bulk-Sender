@@ -177,3 +177,80 @@ class StrictnessDoesNotBreakProductionConfig(SimpleTestCase):
         self.assertTrue(reloaded.SECURE_SSL_REDIRECT)
 
         importlib.reload(sys.modules['config.settings'])
+
+
+class TestSettingsAreHermetic(SimpleTestCase):
+    """
+    settings_test must not depend on the developer's shell.
+
+    Strict parsing (above) means a single stray exported variable can make the
+    entire suite unrunnable: DEBUG='-LH:*, LH:*:error' from a shell that
+    captured test output raised ImproperlyConfigured at import, before a single
+    test ran. settings_test pins the variables it depends on before importing
+    settings, so this checks that from a clean subprocess — in-process the
+    module is already imported, so the assertion would be vacuous.
+    """
+
+    HOSTILE_ENVIRON = {
+        # A boolean flag that is not a boolean.
+        'DEBUG': '-LH:*, LH:*:error',
+        # Production posture without the secrets it demands.
+        'SECRET_KEY': '',
+        'CRYPTOGRAPHY_KEYS': '',
+        # The smoke-test escape hatch, exported by accident.
+        'WHATSAPP_DISABLE_AUTOMATION': 'true',
+    }
+
+    def _import_settings_test(self, extra_env=None):
+        """
+        Runs `import config.settings_test` in a subprocess.
+
+        Returns (returncode, combined output). A subprocess is the only honest
+        way to test import-time behaviour.
+        """
+        import subprocess
+        import sys
+        from pathlib import Path
+
+        # .../backend/sender/tests/test_settings_env.py -> .../backend
+        backend_dir = Path(__file__).resolve().parents[2]
+
+        env = dict(os.environ)
+        env.pop('DEBUG', None)
+        env.update(self.HOSTILE_ENVIRON)
+        if extra_env:
+            env.update(extra_env)
+
+        completed = subprocess.run(
+            [sys.executable, '-c', 'import config.settings_test as s; print("DEBUG", s.DEBUG)'],
+            cwd=str(backend_dir),
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        return completed.returncode, completed.stdout + completed.stderr
+
+    def test_boots_despite_a_hostile_environment(self):
+        code, output = self._import_settings_test()
+
+        self.assertEqual(
+            code, 0,
+            f'settings_test failed to import under a hostile environment:\n{output}',
+        )
+        self.assertIn('DEBUG True', output)
+
+    def test_sends_are_not_silently_disabled(self):
+        """
+        A globally exported WHATSAPP_DISABLE_AUTOMATION would otherwise turn
+        the automation tests into assertions about a stub that marks every
+        contact sent without contacting WhatsApp.
+        """
+        import config.settings_test as settings_test
+
+        self.assertEqual(os.environ['WHATSAPP_DISABLE_AUTOMATION'], 'false')
+
+        from sender import whatsapp_automation as wa
+
+        with mock.patch.dict('os.environ', {}, clear=False):
+            self.assertFalse(wa._env_flag('WHATSAPP_DISABLE_AUTOMATION', 'false'))

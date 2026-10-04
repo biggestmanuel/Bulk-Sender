@@ -36,5 +36,18 @@ export default defineConfig({
     // had nothing to do with the code under test.
     testTimeout: 20000,
     hookTimeout: 20000,
+    // Vite reads process.env.DEBUG as a `debug` namespace filter (DEBUG=vite:*
+    // is how you get its debug logging), and it does so while building the
+    // config, before any test runs. A shell that exports DEBUG as something
+    // else — this machine had DEBUG='-LH:*, LH:*:error', captured reporter
+    // output — therefore changes how the tool configures itself: the run
+    // collapses to worker-startup timeouts ("Timeout waiting for worker to
+    // respond"), 42 of 173 tests executing, and a 94s wall time instead of
+    // 25s. Clearing it here keeps `npm test` a function of the code rather
+    // than of the developer's shell. The backend has the same hazard and
+    // handles it in backend/config/settings_test.py.
+    env: {
+      DEBUG: '',
+    },
   },
 })

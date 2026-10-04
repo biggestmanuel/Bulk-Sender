@@ -194,6 +194,14 @@ and returns the count. It deliberately does **not** restart the send — call
 apply and you can see what happened. Contacts that were already `sent` are
 never touched, so a retry can't re-send to people who already got the message.
 
+**A partially-delivered campaign is never re-sent automatically.** If the
+browser dies part-way through, the send gives up rather than starting the list
+again, because re-running it would deliver a second message to everyone
+already reached. The session is only re-linked and retried when nothing was
+attempted at all, which is the login-failure case. When this happens the
+campaign ends as `failed` with the delivered contacts left `sent`, so a manual
+`/retry/` picks up only the ones that were genuinely missed.
+
 ### Recovering from a dead worker
 
 A send runs on a thread inside a web worker. If gunicorn recycles that worker,
@@ -247,15 +255,36 @@ the filename.
 ## Tests
 
 ```bash
-# Backend — 246 tests
+# Backend — 355 tests
 cd backend
 python manage.py test sender --settings=config.settings_test
 
-# Frontend — 104 tests
+# Frontend — 173 tests
 cd frontend
 npm test
 npm run lint
 ```
+
+### The tests ignore your shell
+
+Both suites pin the environment variables they depend on rather than
+inheriting whatever your shell exports, because `DEBUG` in particular is read
+by both tools for unrelated purposes:
+
+- **Django.** `settings.env_bool` rejects unrecognised booleans on purpose
+  (it's what catches `DEBUG=flase`), so a stray `DEBUG='-LH:*, LH:*:error'`
+  left over from captured test output made every `manage.py test` invocation
+  die at import. `config/settings_test.py` pins `DEBUG`, `SECRET_KEY`,
+  `CRYPTOGRAPHY_KEYS` and `WHATSAPP_DISABLE_AUTOMATION` before importing
+  settings, so a leaked `DEBUG=false` can't trip the production guards either.
+- **Vitest.** Vite reads `process.env.DEBUG` as a `debug` namespace filter. The
+  same leaked value collapsed the run to worker-startup timeouts — 42 of 173
+  tests executing, 94s instead of 25s. `vite.config.js` clears it for tests.
+
+Both are pinned unconditionally, so a test run is a function of the code and
+not of the machine. Tests that genuinely need `DEBUG=False` or the production
+guards assert that explicitly against a controlled environment rather than
+relying on ambient state.
 
 ### Smoke test
 

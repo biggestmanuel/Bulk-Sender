@@ -7,6 +7,7 @@ in-flight campaigns, and not touching contacts that were already delivered.
 """
 
 import json
+import os
 from datetime import timedelta
 
 from django.contrib.auth.models import User
@@ -18,7 +19,7 @@ from django.utils import timezone
 from rest_framework.authtoken.models import Token
 from rest_framework.test import APIClient
 
-from sender.models import Campaign, Contact, UserProfile
+from sender.models import Campaign, Contact, MediaFile, UserProfile
 
 
 class APITestCase(TestCase):
@@ -431,6 +432,43 @@ class DeleteTests(APITestCase):
         response = self.client.delete(f'/api/campaigns/{campaign.pk}/')
 
         self.assertEqual(response.status_code, 409)
+
+    def test_media_files_are_removed_from_storage(self):
+        """
+        Deleting the row without deleting the file would orphan it in
+        MEDIA_ROOT forever — nothing else ever references it.
+        """
+        campaign = self.make_campaign(self.user, statuses=['sent'])
+        media = MediaFile.objects.create(
+            campaign=campaign,
+            file=SimpleUploadedFile('pic.png', b'x' * 32, content_type='image/png'),
+        )
+        path = media.file.path
+        self.assertTrue(os.path.exists(path))
+
+        response = self.client.delete(f'/api/campaigns/{campaign.pk}/')
+
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(os.path.exists(path), 'the attachment should be gone from disk')
+
+    def test_deleting_a_campaign_leaves_other_campaigns_media_alone(self):
+        keep = self.make_campaign(self.user, name='keep', statuses=['sent'])
+        keep_media = MediaFile.objects.create(
+            campaign=keep,
+            file=SimpleUploadedFile('keep.png', b'k' * 16, content_type='image/png'),
+        )
+        keep_path = keep_media.file.path
+
+        drop = self.make_campaign(self.user, name='drop', statuses=['sent'])
+        MediaFile.objects.create(
+            campaign=drop,
+            file=SimpleUploadedFile('drop.png', b'd' * 16, content_type='image/png'),
+        )
+
+        self.client.delete(f'/api/campaigns/{drop.pk}/')
+
+        self.assertTrue(os.path.exists(keep_path), 'unrelated media must survive')
+        self.assertTrue(MediaFile.objects.filter(pk=keep_media.pk).exists())
 
     def test_requires_authentication(self):
         campaign = self.make_campaign(self.user, statuses=['sent'])
