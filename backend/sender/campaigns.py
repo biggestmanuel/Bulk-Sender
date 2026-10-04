@@ -190,12 +190,11 @@ def delete_campaign(request, campaign_id):
             status=status.HTTP_409_CONFLICT,
         )
 
-    removed_files = []
-    for media in campaign.media_files.all():
-        try:
-            removed_files.append(media.file.name)
-        except Exception:
-            logger.exception('Could not resolve media path for %s', media.pk)
+    # FieldFile.name is a plain attribute, not a property, so reading it cannot
+    # fail — this used to be wrapped in a bare `except Exception` that could
+    # never fire, which read as though the name were the risky part. It isn't;
+    # storage.delete() below is, and that one is still guarded.
+    removed_files = [media.file.name for media in campaign.media_files.all()]
 
     with transaction.atomic():
         campaign.delete()  # cascades to contacts and media rows

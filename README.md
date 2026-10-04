@@ -286,14 +286,21 @@ the filename.
 
 ---
 
+## Contributing
+
+Before changing anything, read **[AGENTS.md](AGENTS.md)**. It records the traps
+in this repo that have actually cost time — the leaked `DEBUG` variable that
+breaks both suites, the ambiguity that masqueraded as a flaky frontend test,
+and the standard for proving a fix works (revert it and watch the test go red).
+
 ## Tests
 
 ```bash
-# Backend — 355 tests
+# Backend — 367 tests
 cd backend
 python manage.py test sender --settings=config.settings_test
 
-# Frontend — 173 tests
+# Frontend — 175 tests
 cd frontend
 npm test
 npm run lint
@@ -353,6 +360,17 @@ a real browser at web.whatsapp.com, which is slow, needs a display, and looks
 like abuse to WhatsApp. With it set, contacts are marked sent without any
 network call — so you can exercise the send flow safely. It logs a warning
 every time it's used.
+
+**Do not set that variable for the unit suite.** It short-circuits
+`send_whatsapp_messages` before the browser code runs, so the automation tests
+silently start asserting against a stub that marks everything sent — about a
+dozen failures that look like pre-existing breakage but are your own shell.
+`config/settings_test.py` now forces it off, so a leaked value can't do this.
+
+Note the asymmetry, which is deliberate: the unit suite is hermetic and runs
+anywhere, while `smoke.py` loads the **real** settings module on purpose. A
+genuinely invalid `DEBUG` should fail loudly there — that is the strict parsing
+doing its job, not a bug to paper over.
 
 The backend uses a separate settings module because Django's default PBKDF2
 hasher costs ~0.5s per hash and this suite creates users constantly.

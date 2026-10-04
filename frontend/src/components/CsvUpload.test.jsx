@@ -236,7 +236,17 @@ describe('CsvUpload merge vs replace', () => {
       makeFile('name,phone\nAda,+2348161234765', 'extra-contacts.csv')
     )
 
-    expect(await screen.findByText('extra-contacts.csv')).toBeInTheDocument()
+    // Scoped to the prompt on purpose. The filename appears twice: once in the
+    // "Loaded <file>" line, which renders the moment a file is chosen, and again
+    // inside the merge/replace prompt, which appears only once Papa finishes.
+    // A bare findByText('extra-contacts.csv') matched the first one, and when
+    // the parse completed React re-rendered and detached that node — so the
+    // assertion failed on a correct component roughly a quarter of the time.
+    await waitFor(() =>
+      expect(screen.getByText(/already have contacts loaded/i)).toHaveTextContent(
+        'extra-contacts.csv'
+      )
+    )
   })
 })
 

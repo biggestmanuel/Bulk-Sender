@@ -28,6 +28,7 @@ import threading
 
 from django.conf import settings
 from django.contrib.auth import authenticate
+from django.core.exceptions import SuspiciousFileOperation
 from django.contrib.auth.models import User
 from django.db import IntegrityError, transaction
 from django.http import FileResponse, Http404
@@ -543,13 +544,24 @@ def run_campaign_send(campaign_id, user_id):
 
     media_paths = []
     for media in campaign.media_files.all():
+        # Narrowed from `except Exception`. Reading FileFieldFile.path has a
+        # knowable failure set (django/db/models/fields/files.py and
+        # core/files/storage/base.py): ValueError when the row has no file
+        # associated, NotImplementedError from a storage backend that has no
+        # local path, and SuspiciousFileOperation from safe_join on a name that
+        # escapes the media root. A bare handler here would also swallow a
+        # genuine AttributeError or typo and log it as a missing file, which is
+        # the same masking that commit e904a92 removed elsewhere.
         try:
-            if os.path.exists(media.file.path):
-                media_paths.append(media.file.path)
-            else:
-                logger.error('MediaFile %s missing on disk at send time', media.pk)
-        except Exception:
+            path = media.file.path
+        except (ValueError, NotImplementedError, SuspiciousFileOperation):
             logger.exception('Could not resolve media path for %s', media.pk)
+            continue
+
+        if os.path.exists(path):
+            media_paths.append(path)
+        else:
+            logger.error('MediaFile %s missing on disk at send time', media.pk)
 
     delay_seconds = 3 if campaign.send_mode == Campaign.SendMode.DELAY else 1
 
