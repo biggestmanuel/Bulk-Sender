@@ -30,14 +30,22 @@ function MessageComposer({ onMessageReady }) {
         Use <code style={{ background: 'var(--bg-card-muted)', padding: '1px 6px', borderRadius: '4px', fontSize: '13px' }}>{'{name}'}</code> anywhere to insert each contact's name.
       </p>
 
+      <label className="bs-label" htmlFor="message-body">
+        Your message
+      </label>
       <textarea
+        id="message-body"
         rows="5"
         className="bs-input"
         placeholder="Hi {name}, just checking in about..."
         value={message}
         onChange={(e) => setMessage(e.target.value)}
+        aria-describedby="message-placeholder-hint"
         style={{ resize: 'vertical', fontFamily: 'var(--font-body)', marginBottom: 'var(--space-md)' }}
       />
+      <span id="message-placeholder-hint" className="bs-visually-hidden">
+        Use the placeholder token to insert each contact's name.
+      </span>
 
       <div style={{ marginBottom: 'var(--space-md)' }}>
         <label className="bs-label">Attachments (optional)</label>
