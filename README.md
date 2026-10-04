@@ -164,6 +164,28 @@ session on a long-lived box.
 separate directory, never `MEDIA_ROOT`, because they capture a logged-in
 WhatsApp session.
 
+### Running it in a container
+
+A container has no display either, so the backend image runs gunicorn under
+**Xvfb**, which gives Chrome a virtual screen. `backend/Dockerfile` and
+`backend/docker/entrypoint.sh` do this; the entrypoint waits for the X socket
+to appear rather than sleeping blindly.
+
+The one volume that matters is the WhatsApp session:
+
+```bash
+docker build -t bulk-sender backend
+docker volume create bulk-sender-sessions
+docker run -d -p 8000:8000 \
+  -v bulk-sender-sessions:/app/whatsapp_session \
+  --env-file .env \
+  bulk-sender
+```
+
+Without a persistent volume for that directory, every restart forces a fresh
+phone-link handshake. `docker-compose.yml` wires it up as a named volume, with
+Postgres and Redis as opt-in profiles.
+
 ---
 
 ## API
@@ -277,14 +299,24 @@ by both tools for unrelated purposes:
   die at import. `config/settings_test.py` pins `DEBUG`, `SECRET_KEY`,
   `CRYPTOGRAPHY_KEYS` and `WHATSAPP_DISABLE_AUTOMATION` before importing
   settings, so a leaked `DEBUG=false` can't trip the production guards either.
-- **Vitest.** Vite reads `process.env.DEBUG` as a `debug` namespace filter. The
-  same leaked value collapsed the run to worker-startup timeouts — 42 of 173
-  tests executing, 94s instead of 25s. `vite.config.js` clears it for tests.
+- **Vitest.** Vite reads `process.env.DEBUG` as a `debug` namespace filter,
+  and it does so while *building its config* — before any test runs and
+  before `test.env` in a vitest config would apply. The same leaked value
+  collapsed the run to worker-startup timeouts — 42 of 173 tests executing,
+  94s instead of 25s. `vite.config.js` therefore deletes `process.env.DEBUG`
+  at the top of the file, before `defineConfig()` is evaluated. (Setting it
+  via `test.env` does *not* work for this, and additionally destabilises
+  worker startup.)
 
 Both are pinned unconditionally, so a test run is a function of the code and
 not of the machine. Tests that genuinely need `DEBUG=False` or the production
 guards assert that explicitly against a controlled environment rather than
 relying on ambient state.
+
+The same hazard applies to `manage.py` commands that load the default settings
+module rather than the test one — `makemigrations --check` dies on a stray
+`DEBUG` for the same reason. `config/settings_test.py` is the settings module
+to use for anything you want to be runnable anywhere.
 
 ### Smoke test
 
@@ -316,7 +348,33 @@ hasher costs ~0.5s per hash and this suite creates users constantly.
 Browser automation is tested against a fake Playwright rather than a real
 browser. The actual UI interaction can't be asserted in CI, but everything
 around it can: session reuse, the retry-after-wipe path, pacing, phone-entry
-fallbacks, and status settling.
+fallbacks, status settling, and the rules that stop a retry re-sending to
+people who already received the message.
+
+Four tests skip by design: the quota concurrency tests, because Django's
+in-memory test database serialises writes with a table lock and cannot
+exercise concurrent reservations. They run against a file-backed or Postgres
+database.
+
+### Continuous integration
+
+`.github/workflows/ci.yml` runs the backend suite, `check --deploy`, a
+pending-migration check, and the frontend lint/test/build. Every step in it
+was run locally before being committed.
+
+Two details worth knowing:
+
+- The deploy check generates a throwaway Fernet key rather than using a
+  literal. `encryption.py` builds a cipher from each configured key at import,
+  so a placeholder fails every test that touches an encrypted field.
+- The smoke test is **not** on the push path. It is manual-dispatch-only,
+  because it starts a real browser against web.whatsapp.com unless automation
+  is disabled.
+
+`.pre-commit-config.yaml` mirrors those checks locally. Black is installed at
+`manual` stage only: the codebase has no committed Black style, and
+reformatting everything would bury substantive changes. Remove that hook once
+formatting has been done deliberately.
 
 ---
 
@@ -338,10 +396,15 @@ backend/
       whatsapp_preflight.py  verify selectors against the live page
       reap_stale_campaigns.py recover from dead workers
     tests/
+  Dockerfile + docker/         Xvfb-wrapped image for the browser automation
+  smoke.py                     live end-to-end checks against a running server
 frontend/
-  src/api.js                 single fetch layer with real error handling
-  src/utils/phone.js         client-side validation via libphonenumber-js
-  src/components/            UI, including CampaignList for history
+  src/api.js                   single fetch layer with real error handling
+  src/utils/phone.js           client-side validation via libphonenumber-js
+  src/components/              UI, including CampaignList for history
+.github/workflows/ci.yml       backend + frontend checks
+.pre-commit-config.yaml        the same checks, run before a push
+docker-compose.yml             local stack; sessions on a persistent volume
 ```
 
 ---
@@ -356,7 +419,12 @@ frontend/
 - **No delivery receipts.** "sent" means the send button was clicked, not that
   the message was delivered or read.
 - **SQLite only.** `DATABASE_PATH` is configurable, but the concurrency here
-  assumes a single writer.
+  assumes a single writer. Sends write from background threads while requests
+  are served, so this works for a handful of users and gets uncomfortable
+  before long. Postgres is the right move before that, and `docker-compose.yml`
+  has an opt-in profile for it — but it is not wired into `settings.py` yet,
+  deliberately: switching database backends should be a decision, not a
+  default.
 - **No scheduled campaigns.** Sends start when you press the button.
 - **Retry is per-campaign, not selective.** You can't retry just the failures
   from a specific day or subset — every `failed` contact comes back.
