@@ -1,0 +1,82 @@
+# Mirrors the checks in .github/workflows/ci.yml so a mistake is caught before
+# it is pushed rather than after.
+#
+# Only checks that need no network and no secrets. The deploy check needs a
+# real Fernet key (encryption.py builds a cipher from it at import), so it
+# stays in CI, which can generate a throwaway one.
+
+repos:
+  - repo: https://github.com/psf/black
+    rev: 24.8.0
+    hooks:
+      - id: black
+        # Not auto-formatting: this repo has no committed Black style yet, so
+        # reformatting everything now would bury the substantive changes.
+        # Remove this hook once the codebase has been formatted deliberately.
+        stages: [manual]
+
+  - repo: https://github.com/pycqa/flake8
+    rev: 7.1.1
+    hooks:
+      - id: flake8
+        args: [--max-line-length=110, --extend-ignore=E203,W503]
+
+  - repo: https://github.com/pycqa/isort
+    rev: 5.13.2
+    hooks:
+      - id: isort
+        args: [--profile=black, --line-length=110]
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.6.0
+    hooks:
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        args: [--maxkb=2048]
+      - id: end-of-file-fixer
+        exclude: ^frontend/package-lock\.json$
+      - id: trailing-whitespace
+        exclude: ^(frontend/package-lock\.json|.*\.csv)$
+      - id: mixed-line-ending
+        args: [--fix=lf]
+        exclude: ^frontend/package-lock\.json$
+
+  - repo: local
+    hooks:
+      - id: django-makemigrations-check
+        name: no pending migrations
+        entry: python manage.py makemigrations --check --dry-run --settings=config.settings_test
+        language: system
+        pass_filenames: false
+        files: ^backend/sender/.*\.py$
+        stages: [pre-commit]
+
+  - repo: local
+    hooks:
+      - id: backend-tests
+        name: backend tests
+        entry: python manage.py test sender --settings=config.settings_test
+        language: system
+        pass_filenames: false
+        files: ^backend/.*\.py$
+        stages: [pre-commit]
+
+  - repo: local
+    hooks:
+      - id: frontend-lint
+        name: frontend lint
+        entry: npm run lint
+        language: system
+        pass_filenames: false
+        files: ^frontend/src/.*\.jsx?$
+        stages: [pre-commit]
+
+  - repo: local
+    hooks:
+      - id: frontend-tests
+        name: frontend tests
+        entry: npm test
+        language: system
+        pass_filenames: false
+        files: ^frontend/src/.*\.jsx?$
+        stages: [pre-push]

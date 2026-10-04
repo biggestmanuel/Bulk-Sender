@@ -1,0 +1,172 @@
+name: CI
+
+# Every job here mirrors a command that runs locally, so a failure is always
+# reproducible without the CI logs:
+#
+#   backend   python manage.py test sender --settings=config.settings_test
+#   frontend  npm test && npm run lint
+#
+# The smoke test is deliberately manual-only. It needs a running server, and
+# it drives a real browser against web.whatsapp.com unless
+# WHATSAPP_DISABLE_AUTOMATION is set — neither belongs on every push.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  # A new push supersedes an in-flight run for the same ref.
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    name: Backend tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Install dependencies
+        working-directory: backend
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Django system check
+        working-directory: backend
+        env:
+          # Throwaway secrets so settings.py's production guards are satisfied
+          # and `check --deploy` is meaningful. Nothing here is a real secret.
+          DEBUG: 'false'
+          SECRET_KEY: ci-only-not-a-real-secret-0000000000000000000000000000000000000000
+          ALLOWED_HOSTS: ci.example.com
+        run: |
+          # A real Fernet key: encryption.py builds a cipher from each
+          # configured key at import, so a placeholder fails any test that
+          # touches an encrypted field. This one is throwaway by construction.
+          python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())" > key.txt
+          CRYPTOGRAPHY_KEYS="$(cat key.txt)" python manage.py check
+
+      - name: Deploy check
+        working-directory: backend
+        env:
+          DEBUG: 'false'
+          SECRET_KEY: ci-only-not-a-real-secret-0000000000000000000000000000000000000000
+          ALLOWED_HOSTS: ci.example.com
+          SECURE_HSTS_SECONDS: '31536000'
+        run: |
+          python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())" > key.txt
+          export CRYPTOGRAPHY_KEYS="$(cat key.txt)"
+          python manage.py check --deploy 2>&1 | tee deploy.txt
+          # HSTS preload is intentionally off by default (it is close to
+          # irreversible), so W021 is the one warning we allow. Any other
+          # security warning fails the build.
+          if grep 'security.W' deploy.txt | grep -v 'security.W021'; then
+            echo "Unexpected security warning above"
+            exit 1
+          fi
+
+      - name: No pending migrations
+        working-directory: backend
+        # Catches a model change committed without its migration, which would
+        # otherwise only fail at deploy time.
+        #
+        # Uses config.settings_test rather than the default settings module:
+        # that module pins a valid DEBUG and secrets before Django loads, so
+        # the check cannot be broken by whatever DEBUG the shell happens to
+        # export. CI itself is clean, but the same reasoning that keeps
+        # `manage.py test` working locally applies here.
+        run: python manage.py makemigrations --check --dry-run --settings=config.settings_test
+
+      - name: Tests
+        working-directory: backend
+        run: python manage.py test sender --settings=config.settings_test --verbosity 2
+
+  frontend:
+    name: Frontend tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Tests
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+  smoke:
+    name: Smoke test (manual)
+    # Needs a human and must never run on every push: it starts a real
+    # browser against web.whatsapp.com unless automation is disabled.
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Install dependencies
+        working-directory: backend
+        run: pip install -r requirements.txt
+
+      - name: Migrate
+        working-directory: backend
+        run: python manage.py migrate
+
+      - name: Start the server
+        working-directory: backend
+        env:
+          # No browser, no network calls to WhatsApp.
+          WHATSAPP_DISABLE_AUTOMATION: 'true'
+        run: |
+          python manage.py runserver 127.0.0.1:8777 --noreload &
+          for i in $(seq 1 30); do
+            # 401 is a success signal: it means Django is up and routing.
+            code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8777/api/login-status/ || true)
+            if [ "$code" = "401" ] || [ "$code" = "403" ]; then
+              echo "server up"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "server did not start"
+          exit 1
+
+      - name: Smoke test
+        working-directory: backend
+        env:
+          WHATSAPP_DISABLE_AUTOMATION: 'true'
+        run: python smoke.py
