@@ -3,13 +3,7 @@
 from django.test import SimpleTestCase
 
 from sender import phone_numbers as pn
-from sender.phone_numbers import (
-    PhoneValidationError,
-    country_for,
-    is_valid,
-    normalize,
-    to_e164,
-)
+from sender.phone_numbers import PhoneValidationError, country_for, is_valid, normalize, to_e164
 
 
 class NormalizeTests(SimpleTestCase):

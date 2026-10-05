@@ -13,12 +13,13 @@ with a stable machine-readable `code` for the cases the frontend branches on
 
 import logging
 
-from django.core.exceptions import PermissionDenied as DjangoPermissionDenied
-from django.core.exceptions import ValidationError as DjangoValidationError
+from django.core.exceptions import (
+    PermissionDenied as DjangoPermissionDenied,
+    ValidationError as DjangoValidationError,
+)
 from django.http import Http404
 from rest_framework import status
-from rest_framework.exceptions import NotFound
-from rest_framework.exceptions import PermissionDenied as DRFPermissionDenied
+from rest_framework.exceptions import NotFound, PermissionDenied as DRFPermissionDenied
 from rest_framework.response import Response
 from rest_framework.views import exception_handler as drf_exception_handler
 

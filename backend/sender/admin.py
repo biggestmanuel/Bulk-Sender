@@ -1,13 +1,6 @@
 from django.contrib import admin
 
-from .models import (
-    Campaign,
-    Contact,
-    DailySendQuota,
-    MediaFile,
-    UserProfile,
-    WhatsAppLoginState,
-)
+from .models import Campaign, Contact, DailySendQuota, MediaFile, UserProfile, WhatsAppLoginState
 
 
 class ContactInline(admin.TabularInline):

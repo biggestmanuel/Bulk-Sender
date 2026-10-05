@@ -7,13 +7,14 @@ falls back to DRF's HTML error page turns a clear server-side failure into
 "Unexpected token < in JSON" in the browser.
 """
 
-from django.core.exceptions import PermissionDenied as DjangoPermissionDenied
-from django.core.exceptions import ValidationError as DjangoValidationError
+from django.core.exceptions import (
+    PermissionDenied as DjangoPermissionDenied,
+    ValidationError as DjangoValidationError,
+)
 from django.http import Http404
 from django.test import TestCase
 from rest_framework import status
 from rest_framework.exceptions import APIException, NotFound
-from rest_framework.response import Response
 from rest_framework.test import APIRequestFactory
 
 from sender.exceptions import api_exception_handler

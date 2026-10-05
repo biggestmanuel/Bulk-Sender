@@ -29,8 +29,8 @@ a migration window or permanent data loss.
 
 from cryptography.fernet import Fernet, InvalidToken
 from django.conf import settings
-from django.db import models
 from django.core.exceptions import ValidationError
+from django.db import models
 
 
 def _get_fernets():

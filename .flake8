@@ -1,0 +1,7 @@
+[flake8]
+# Mirrored in .pre-commit-config.yaml. Keep the two in step.
+max-line-length = 110
+extend-ignore = E203,W503
+# Django generates these; they are machine-written, never hand-edited, and
+# reformatted output would fight the next `makemigrations`.
+exclude = migrations,.git,__pycache__,venv,.venv,node_modules
