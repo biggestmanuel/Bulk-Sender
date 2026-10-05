@@ -57,8 +57,13 @@ services:
     # Docker, so chown them once before first use:
     #   docker compose run --rm --entrypoint chown appuser:appuser /app/media ...
     healthcheck:
+      # Same tolerance as the HEALTHCHECK baked into the image: a 401 is the
+      # success signal here, not a failure. `/api/login-status/` requires auth,
+      # so an unauthenticated probe always gets 401, and `curl -fsS` exits 22 on
+      # any HTTP error. Without the `|| [ "$?" = "22" ]` fallback this reports
+      # the container unhealthy forever while the app is serving perfectly.
       test:
-        ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/api/login-status/", "-o", "/dev/null"]
+        ["CMD-SHELL", "curl -fsS http://127.0.0.1:8000/api/login-status/ -o /dev/null || [ \"$?\" = \"22\" ]"]
       interval: 30s
       timeout: 5s
       retries: 3
