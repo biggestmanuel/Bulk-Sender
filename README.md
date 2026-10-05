@@ -268,6 +268,12 @@ nothing about why. The preflight checks each selector against the live page in
 about 30 seconds and names the one that broke. It uses a throwaway profile and
 never touches a linked session.
 
+> **Last verified against the live page: 2026-10-05 — all 8 checks passed.**
+> Every automated test uses a fake browser, so nothing in CI can catch a
+> selector WhatsApp has changed; a broken selector passes all 542 tests and
+> fails every real send. Re-run the preflight before trusting a send, and
+> treat any date more than a few weeks old as unknown.
+
 Set `WHATSAPP_DEBUG=true` to have it also save screenshots of each step.
 
 Errors are always `{"error": "...", "code": "..."}` so the client can show the
