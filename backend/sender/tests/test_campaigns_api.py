@@ -6,7 +6,6 @@ cases that are easy to get wrong: ownership isolation, the interaction with
 in-flight campaigns, and not touching contacts that were already delivered.
 """
 
-import json
 import os
 from datetime import timedelta
 

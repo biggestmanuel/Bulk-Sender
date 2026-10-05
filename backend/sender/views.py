@@ -28,10 +28,10 @@ import threading
 
 from django.conf import settings
 from django.contrib.auth import authenticate
-from django.core.exceptions import SuspiciousFileOperation
 from django.contrib.auth.models import User
+from django.core.exceptions import SuspiciousFileOperation
 from django.db import IntegrityError, transaction
-from django.http import FileResponse, Http404
+from django.http import FileResponse
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.authtoken.models import Token
@@ -46,7 +46,6 @@ from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 
-from .campaigns import delete_campaign, list_campaigns, retry_campaign
 from .models import Campaign, Contact, DailySendQuota, MediaFile, UserProfile, WhatsAppLoginState
 from .phone_numbers import PhoneValidationError, to_e164
 from .reliability import reap_stale_campaigns
@@ -221,7 +220,9 @@ def _validate_contacts(raw_contacts):
 
     for index, contact in enumerate(raw_contacts):
         if not isinstance(contact, dict):
-            rejected.append({'name': '', 'phone': str(contact)[:40], 'reason': 'entry is not a valid contact'})
+            rejected.append(
+                {'name': '', 'phone': str(contact)[:40], 'reason': 'entry is not a valid contact'}
+            )
             continue
 
         name = str(contact.get('name', '') or '').strip()[:255]

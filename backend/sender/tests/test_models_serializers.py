@@ -11,7 +11,6 @@ HTTP layer, which left the pieces underneath untested. Focus areas:
 * media_count, which has two code paths depending on whether prefetch ran
 """
 
-from datetime import timedelta
 
 from django.contrib.auth.models import User
 from django.core.files.uploadedfile import SimpleUploadedFile

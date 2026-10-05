@@ -11,7 +11,6 @@ from unittest import mock
 
 from django.contrib.auth.models import User
 from django.test import TestCase
-from django.utils import timezone
 
 from sender.models import Campaign, Contact, UserProfile, WhatsAppLoginState
 from sender.views import run_campaign_send
@@ -67,7 +66,6 @@ class HappyPathTests(WorkerTestCase):
         self.assertLessEqual(self.campaign.send_started_at, self.campaign.send_finished_at)
 
     def test_progress_callback_updates_contacts(self):
-        seen = []
 
         def fake_send(**kwargs):
             for contact in kwargs['contacts']:
@@ -255,10 +253,10 @@ class NoSecondDeliveryTests(TestCase):
 
     def setUp(self):
         from django.core.cache import cache
-
-        from sender import views
         from rest_framework.authtoken.models import Token
         from rest_framework.test import APIClient
+
+        from sender import views
 
         cache.clear()
         views._active_sends.clear()

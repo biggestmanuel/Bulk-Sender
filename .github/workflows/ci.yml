@@ -90,6 +90,20 @@ jobs:
         # `manage.py test` working locally applies here.
         run: python manage.py makemigrations --check --dry-run --settings=config.settings_test
 
+      # The pre-commit config claimed to mirror CI while running no linting
+      # here at all, so a flake8 violation would block a commit and never fail
+      # a push. These read .flake8 and .isort.cfg from the repo root, which is
+      # also what the pre-commit hooks read — one source of truth.
+      - name: Lint (flake8)
+        run: |
+          pip install flake8==7.1.1
+          flake8 backend
+
+      - name: Import order (isort)
+        run: |
+          pip install isort==5.13.2
+          isort --check-only backend
+
       - name: Tests
         working-directory: backend
         run: python manage.py test sender --settings=config.settings_test --verbosity 2

@@ -27,7 +27,6 @@ from .reliability import reap_stale_campaigns
 from .serializers import CampaignListSerializer
 from .throttles import CampaignCreateThrottle
 
-
 logger = logging.getLogger(__name__)
 
 # Enough history to be useful without making the response unbounded. A user

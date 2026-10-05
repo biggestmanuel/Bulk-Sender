@@ -19,6 +19,8 @@ Exits non-zero if any check fails.
 
 import json
 import os
+import random
+import string
 import sys
 import urllib.error
 import urllib.request
@@ -149,9 +151,6 @@ def form_call(method, path, body, label='', expect=200):
 
 
 print('\n--- auth ---')
-import random
-import string
-
 username = 'smoke_' + ''.join(random.choices(string.ascii_lowercase, k=8))
 password = 'smoke-test-password-1'
 

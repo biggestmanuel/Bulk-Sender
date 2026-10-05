@@ -10,10 +10,9 @@ settling — is pure logic and very much worth testing.
 
 from unittest import mock
 
-from django.test import SimpleTestCase, override_settings
+from django.test import SimpleTestCase
 
 from sender import whatsapp_automation as wa
-
 
 # --- Fake Playwright ------------------------------------------------------
 
@@ -303,9 +302,11 @@ class PhoneEntryTests(SimpleTestCase):
         page = login_page(country_options={'Nigeria'})
         wa._fill_phone_login(page, '+2348161234765')
 
-        self.assertTrue(
-            page.locator('[role="option"]:has-text("Nigeria"), li:has-text("Nigeria"), div:has-text("Nigeria")').clicked
+        locator = (
+            '[role="option"]:has-text("Nigeria"), '
+            'li:has-text("Nigeria"), div:has-text("Nigeria")'
         )
+        self.assertTrue(page.locator(locator).clicked)
         self.assertEqual(page.current_input, '8161234765')
 
     def test_falls_back_to_international_form_when_rejected(self):
@@ -598,6 +599,7 @@ class SendOrchestrationTests(SimpleTestCase):
             class F:
                 def __enter__(self):
                     return FakePlaywright(Never(body_text='Enter your phone number'))
+
                 def __exit__(self, *a):
                     return False
             return F()
@@ -635,6 +637,7 @@ class SendOrchestrationTests(SimpleTestCase):
             class F:
                 def __enter__(self):
                     return FakePlaywright(Never(body_text='Enter your phone number'))
+
                 def __exit__(self, *a):
                     return False
             return F()
@@ -668,6 +671,7 @@ class SendOrchestrationTests(SimpleTestCase):
             class F:
                 def __enter__(self):
                     return FakePlaywright(Never(body_text='Enter your phone number'))
+
                 def __exit__(self, *a):
                     return False
             return F()

@@ -16,8 +16,6 @@ you which specific step broke. It is read-only with respect to the app: it uses
 a throwaway profile directory and does not touch any user's real session.
 """
 
-import re
-import sys
 import tempfile
 from pathlib import Path
 
@@ -118,7 +116,6 @@ class Command(BaseCommand):
                 )
 
         for result in results:
-            style = self.style.SUCCESS if result.ok else self.style.ERROR
             self.stdout.write(f'  [{result.symbol}] {result.name}')
             if result.detail:
                 self.stdout.write(f'         {result.detail}')

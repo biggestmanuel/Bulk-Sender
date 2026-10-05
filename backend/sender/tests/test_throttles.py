@@ -13,7 +13,7 @@ from django.core.cache import cache
 from django.test import TestCase, override_settings
 from rest_framework.test import APIClient
 
-from sender.models import Campaign, Contact, UserProfile
+from sender.models import Campaign, UserProfile
 from sender.throttles import (
     CampaignCreateThrottle,
     LoginRateThrottle,
@@ -171,8 +171,8 @@ class AuthThrottleEnforcementTests(TestCase):
         explicitly: a busy office or a shared NAT can throttle legitimate users
         against each other.
         """
-        from rest_framework.request import Request
         from django.test import RequestFactory
+        from rest_framework.request import Request
 
         factory = RequestFactory()
 

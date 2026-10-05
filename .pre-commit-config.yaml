@@ -1,5 +1,6 @@
 # Mirrors the checks in .github/workflows/ci.yml so a mistake is caught before
-# it is pushed rather than after.
+# it is pushed rather than after. Lint settings live in .flake8 and .isort.cfg
+# at the repo root, which CI reads too — one source of truth, not two.
 #
 # Only checks that need no network and no secrets. The deploy check needs a
 # real Fernet key (encryption.py builds a cipher from it at import), so it
@@ -19,13 +20,14 @@ repos:
     rev: 7.1.1
     hooks:
       - id: flake8
-        args: [--max-line-length=110, --extend-ignore=E203,W503]
+        # No args: settings come from .flake8 at the repo root, which CI also
+        # reads. Duplicating them here is how the two drift apart.
 
   - repo: https://github.com/pycqa/isort
     rev: 5.13.2
     hooks:
       - id: isort
-        args: [--profile=black, --line-length=110]
+        # No args: settings come from .isort.cfg at the repo root.
 
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v4.6.0

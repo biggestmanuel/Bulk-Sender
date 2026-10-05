@@ -246,8 +246,6 @@ class TestSettingsAreHermetic(SimpleTestCase):
         the automation tests into assertions about a stub that marks every
         contact sent without contacting WhatsApp.
         """
-        import config.settings_test as settings_test
-
         self.assertEqual(os.environ['WHATSAPP_DISABLE_AUTOMATION'], 'false')
 
         from sender import whatsapp_automation as wa
