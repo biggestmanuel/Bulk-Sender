@@ -357,7 +357,7 @@ python manage.py runserver 127.0.0.1:8777 --noreload
 python smoke.py
 ```
 
-29 checks over the whole API: registration, phone validation, campaign
+28 checks over the whole API: registration, phone validation, campaign
 creation (including that a rejected campaign persists nothing), progress
 counts, cross-user isolation on every endpoint, and the send guards.
 

@@ -290,13 +290,22 @@ else:
     print('         fast to catch); covered by test_views.StartSendingTests.')
 
     # The disabled-automation worker marks contacts sent immediately.
+    #
+    # Polling until the campaign settles is ONE check, however many requests it
+    # takes. Each call() bumps the global counter, so without this the reported
+    # total drifted between runs depending on timing — 28 or 29 for the same
+    # code, which made the number quoted in the README wrong at random.
+    checks_before_poll = checks
+    polls = 0
     for _ in range(30):
         status, data = call('GET', f'/campaigns/{campaign_id}/status/', expect=200,
                             label='poll for completion')
+        polls += 1
         if data['campaign_status'] in ('completed', 'failed'):
             break
         import time
         time.sleep(1)
+    checks = checks_before_poll + 1
 
     if data['campaign_status'] != 'completed':
         failures.append(f'campaign ended as {data["campaign_status"]}, expected completed')

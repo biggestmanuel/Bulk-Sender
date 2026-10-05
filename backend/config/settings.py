@@ -13,6 +13,7 @@ misconfigured deploy would boot "fine" and quietly encrypt real users'
 phone numbers with a key that is public in this repository.
 """
 
+import logging
 import os
 from pathlib import Path
 
@@ -409,3 +410,37 @@ LOGGING = {
         },
     },
 }
+
+
+# --- Loud warning when the committed development key is the live one -------
+# Emitted here, after LOGGING is configured, so it actually reaches the console
+# rather than being swallowed by Django's default (empty) logging setup.
+#
+# This closes a real gap. The guard above refuses the development key when
+# DEBUG=False, which reads like full protection but is not: DEBUG defaults to
+# True, and with CRYPTOGRAPHY_KEYS unset a fresh clone boots straight onto this
+# key. Verified rather than assumed — every row in a development database
+# decrypted with it, including phone numbers and message bodies.
+#
+# So the exact scenario the guard was written for (real numbers encrypted under
+# a key that is public in this repository's history) was the one it did not
+# cover. It is not worth refusing outright, because "a fresh clone runs with no
+# setup" is a real convenience the README sells. But it must not be silent.
+
+if DEV_CRYPTOGRAPHY_KEY.encode() in CRYPTOGRAPHY_KEYS:
+    logging.getLogger('config.settings').warning(
+        '\n'
+        '  ############################################################\n'
+        '  #  ENCRYPTING WITH THE COMMITTED DEVELOPMENT KEY          #\n'
+        '  #                                                          #\n'
+        '  #  Phone numbers and message bodies are being encrypted    #\n'
+        '  #  under a key that is PUBLIC in this repository. Anything #\n'
+        '  #  stored now is readable by anyone who clones this repo.  #\n'
+        '  #                                                          #\n'
+        '  #  Fine for throwaway test data. Not fine for real        #\n'
+        '  #  contacts. Set CRYPTOGRAPHY_KEYS before you add any.    #\n'
+        '  #                                                          #\n'
+        '  #  python -c "from cryptography.fernet import Fernet; \\\n'
+        '  #    print(Fernet.generate_key().decode())"               #\n'
+        '  ############################################################'
+    )

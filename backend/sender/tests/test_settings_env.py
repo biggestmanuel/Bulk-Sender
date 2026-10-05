@@ -158,8 +158,61 @@ class EnvListTests(SimpleTestCase):
         self.assertNotIn('mutated.example.com', second.ALLOWED_HOSTS)
 
 
+class DevEncryptionKeyWarningTests(SimpleTestCase):
+    """
+    The committed development key must announce itself at startup.
+
+    Verified rather than assumed: every row in a development database decrypted
+    with the key committed in settings.py, phone numbers and message bodies
+    included. The existing guard only refuses that key when DEBUG=False, which
+    reads like protection but is not — DEBUG defaults to True, and with
+    CRYPTOGRAPHY_KEYS unset a fresh clone boots straight onto it. So the case
+    the guard was written for was the one case it did not cover.
+
+    Refusing outright would break "a fresh clone runs with no setup", which the
+    README sells. Silently encrypting is what actually happened. So it warns.
+    """
+
+    def tearDown(self):
+        importlib.reload(sys.modules['config.settings'])
+
+    def test_warns_when_the_committed_key_is_the_live_one(self):
+        with self.assertLogs('config.settings', level='WARNING') as captured:
+            with mock.patch.dict('os.environ', {
+                'DEBUG': 'true',
+                'SECRET_KEY': 'x',
+            }, clear=True):
+                importlib.reload(sys.modules['config.settings'])
+
+        message = '\n'.join(captured.output)
+        self.assertIn('ENCRYPTING WITH THE COMMITTED DEVELOPMENT KEY', message)
+        self.assertIn('PUBLIC in this repository', message)
+        self.assertIn('CRYPTOGRAPHY_KEYS', message, 'the warning must say how to fix it')
+
+    def test_silent_when_a_real_key_is_configured(self):
+        from cryptography.fernet import Fernet
+
+        with self.assertNoLogs('config.settings', level='WARNING'):
+            with mock.patch.dict('os.environ', {
+                'DEBUG': 'true',
+                'SECRET_KEY': 'x',
+                'CRYPTOGRAPHY_KEYS': Fernet.generate_key().decode(),
+            }, clear=True):
+                importlib.reload(sys.modules['config.settings'])
+
+    def test_warning_does_not_break_boot(self):
+        """A warning is only useful if the app still starts."""
+        with mock.patch.dict('os.environ', {
+            'DEBUG': 'true',
+            'SECRET_KEY': 'x',
+        }, clear=True):
+            reloaded = importlib.reload(sys.modules['config.settings'])
+
+        self.assertTrue(reloaded.DEBUG)
+        self.assertEqual(len(reloaded.CRYPTOGRAPHY_KEYS), 1)
+
+
 class StrictnessDoesNotBreakProductionConfig(SimpleTestCase):
-    """Valid production settings must still load with strict parsing in place."""
 
     def test_valid_production_environment_loads(self):
         import config.settings as settings_module
