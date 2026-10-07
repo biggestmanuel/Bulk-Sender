@@ -115,12 +115,41 @@ python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().d
 ```
 
 `CRYPTOGRAPHY_KEYS` is a comma-separated list, **newest first**. The first key
-encrypts; all of them are tried when decrypting. That's what makes rotation
-possible — prepend a new key, then drop the old one later, with no window
-where existing data becomes unreadable.
+encrypts; all of them are tried when decrypting.
+
+#### Rotating a key
+
+Rotation is three steps, and the middle one is the one people forget. Rows are
+only re-encrypted when something explicitly saves them — never, for a campaign
+that already finished sending — so **prepending a key does not migrate anything
+by itself.** Dropping the old key at that point makes every un-migrated row
+permanently unreadable.
+
+```bash
+# 1. Generate a key and prepend it. Keep the old ones in the list for now.
+#    CRYPTOGRAPHY_KEYS=<new>,<old>
+
+# 2. Migrate the rows onto the new key.
+python manage.py rekey_contacts --dry-run   # report
+python manage.py rekey_contacts             # apply
+
+# 3. Only once it reports every row re-encrypted, drop the old keys.
+```
+
+The command reads raw ciphertext rather than going through the ORM, so it still
+runs when a row is unreadable — which is exactly the situation where you would
+otherwise be unable to fix it, because `decrypt_value` raises from
+`from_db_value` on *any* queryset read, including `.delete()`. Rows that no
+configured key can decrypt are listed and left untouched; the command never
+deletes data. If one appears there, the key for it is gone from your password
+manager and only you can recover it.
 
 Losing every key makes all stored data permanently unreadable. Back the list
 up in a password manager.
+
+The committed development key is refused when `DEBUG=False`, and warns on
+startup when it is the one actually in use — see "The tests ignore your shell"
+for why the `DEBUG=False` guard alone is not enough.
 
 ### Other settings
 
@@ -132,11 +161,36 @@ up in a password manager.
 | `MAX_MEDIA_BYTES` | 25MB | Per uploaded attachment |
 | `THROTTLE_SEND_QUOTA` | `20000/day` | Contacts one user may queue per day |
 | `THROTTLE_LOGIN` | `10/minute` | Per IP |
+| `THROTTLE_CAMPAIGN_CREATE` | `60/hour` | Per user; bounds media upload volume |
 | `REDIS_URL` | unset | Set for shared rate limits; see below |
 | `CAMPAIGN_STALE_AFTER_SECONDS` | `2700` | When an unresponsive send is presumed dead |
 | `WHATSAPP_HEADLESS` | `false` | See "Headless vs headed" |
 | `WHATSAPP_DEBUG` | `false` | Writes screenshots of the automation steps |
 | `SECURE_HSTS_SECONDS` | `0` | Raise once HTTPS is confirmed working |
+
+### Behind a reverse proxy
+
+Two things to get right, both easy to miss and both quiet when wrong.
+
+**The proxy must overwrite `X-Forwarded-For`, not append to it.** With
+`SECURE_PROXY_SSL_HEADER` set, DRF identifies clients by that header — which is
+what the login and register rate limits key off. If your proxy appends to a
+client-supplied header instead of replacing it, an attacker can send a different
+value on every request and bypass both limits entirely. That is the difference
+between "10 login attempts a minute" and "unlimited password guessing".
+
+**Terminate TLS upstream.** `SECURE_SSL_REDIRECT` defaults to on with
+`DEBUG=False`, so without a proxy passing `X-Forwarded-Proto: https` every
+request redirects to itself.
+
+### A note on where the token lives
+
+The API token is kept in `localStorage`. That is a deliberate trade: it is
+readable by any script that runs on the page, so it is only as safe as the app's
+own XSS defences, and it is the standard approach for a token-authenticated SPA
+with no server-side session. It is called out here rather than left as an
+accident. Moving to an `HttpOnly` cookie would remove the exposure but requires
+CSRF protection, which is a deliberate piece of work rather than a swap.
 
 ### Rate limits need a shared cache
 
@@ -431,6 +485,7 @@ backend/
     management/commands/
       whatsapp_preflight.py  verify selectors against the live page
       reap_stale_campaigns.py recover from dead workers
+      rekey_contacts.py      rotate the encryption key
     tests/
   Dockerfile + docker/         Xvfb-wrapped image for the browser automation
   smoke.py                     live end-to-end checks against a running server

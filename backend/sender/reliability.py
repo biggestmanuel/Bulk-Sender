@@ -76,7 +76,21 @@ def reap_stale_campaigns(owner=None, now=None, timeout=None):
         queryset = queryset.filter(owner=owner)
 
     reaped = []
-    for campaign in queryset.select_related('owner').only('id', 'owner_id', 'status'):
+    # The .only() is deliberate — message_text is encrypted, so selecting the
+    # full row would decrypt every campaign body just to test a timestamp.
+    # But it has to name every column is_stale() touches, or Django defers them
+    # and issues a fresh SELECT per campaign for last_heartbeat_at (and again
+    # for send_started_at / created_at when the heartbeat is null). Measured at
+    # one extra query per stale campaign; listing the columns makes it one
+    # query total.
+    for campaign in queryset.select_related('owner').only(
+        'id',
+        'owner_id',
+        'status',
+        'last_heartbeat_at',
+        'send_started_at',
+        'created_at',
+    ):
         if not is_stale(campaign, now=now, timeout=cutoff_seconds):
             continue
 

@@ -226,6 +226,72 @@ describe('createCampaign', () => {
   })
 })
 
+describe('request timeout', () => {
+  // fetch() has no timeout of its own, so a backend that accepts the
+  // connection and then never answers leaves the promise pending forever. The
+  // polling loop survives, but the progress panel stops updating with no
+  // error anywhere, which reads as "the send finished" when it has not.
+
+  it('aborts and reports a timeout when the server never answers', async () => {
+    vi.useFakeTimers()
+    try {
+      fetchMock.mockImplementation(
+        (url, options) =>
+          new Promise((resolve, reject) => {
+            options.signal.addEventListener('abort', () => {
+              const err = new Error('aborted')
+              err.name = 'AbortError'
+              reject(err)
+            })
+          })
+      )
+
+      const pending = getLoginStatus()
+      const assertion = expect(pending).rejects.toMatchObject({
+        name: 'ApiError',
+        code: 'timeout',
+      })
+      await vi.advanceTimersByTimeAsync(31000)
+      await assertion
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('passes an abort signal so the request can actually be cancelled', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ ok: true }))
+
+    await getLoginStatus()
+
+    expect(fetchMock.mock.calls[0][1].signal).toBeDefined()
+  })
+
+  it('gives campaign creation a longer budget, since it uploads files', async () => {
+    vi.useFakeTimers()
+    try {
+      fetchMock.mockResolvedValue(jsonResponse({ id: 1 }))
+
+      const pending = createCampaign({
+        name: 'c',
+        messageText: 'hi',
+        sendMode: 'delay',
+        contacts: [{ name: 'A', phone: '+2348161234765' }],
+        mediaFiles: [new File(['x'], 'a.png', { type: 'image/png' })],
+      })
+      await vi.advanceTimersByTimeAsync(60000)
+      await pending
+
+      // Still in flight at 60s: the upload budget is longer than the default.
+      expect(fetchMock).toHaveBeenCalled()
+      const assertion = expect(pending).resolves.toBeDefined()
+      await vi.advanceTimersByTimeAsync(70000)
+      await assertion
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+})
+
 describe('logoutUser', () => {
   it('clears both stored values', () => {
     localStorage.setItem('authToken', 'abc')
