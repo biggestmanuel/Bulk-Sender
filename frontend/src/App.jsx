@@ -14,6 +14,7 @@ import CsvUpload from './components/CsvUpload'
 import LoginCode from './components/LoginCode'
 import MessageComposer from './components/MessageComposer'
 import SendProgress from './components/SendProgress'
+import CampaignMedia from './components/CampaignMedia'
 import SendSettings from './components/SendSettings'
 import WhatsAppNumberSettings from './components/WhatsAppNumberSettings'
 import { classifyPhone } from './utils/phone'
@@ -378,14 +379,23 @@ function App() {
       )}
 
       {campaignId && sendSummary.total > 0 && (
-        <SendProgress
-          total={sendSummary.total}
-          sent={sendSummary.sent}
-          failed={sendSummary.failed}
-          campaignStatus={campaignStatus?.campaign_status}
-          statusDetail={campaignStatus?.status_detail}
-          isPolling={isSending}
-        />
+        <>
+          <SendProgress
+            total={sendSummary.total}
+            sent={sendSummary.sent}
+            failed={sendSummary.failed}
+            campaignStatus={campaignStatus?.campaign_status}
+            statusDetail={campaignStatus?.status_detail}
+            isPolling={isSending}
+          />
+          {/* The status response has always carried media_files; nothing
+              rendered them, so an attached photo could be sent without ever
+              being seen. */}
+          <CampaignMedia
+            campaignId={campaignId}
+            files={campaignStatus?.media_files || []}
+          />
+        </>
       )}
 
       {loginOverlay && (

@@ -53,8 +53,22 @@ class RegisterRateThrottle(_RateFromSettings, AnonRateThrottle):
 
 
 class CampaignCreateThrottle(_RateFromSettings, UserRateThrottle):
+    """
+    Bounds how fast one user can create campaigns and upload media.
+
+    This pointed at the shared 'user' scope, which meant _RateFromSettings
+    overwrote the declared 60/hour with the 600/hour global user rate — the
+    limit below was dead code, and the endpoint ran 10x looser than intended.
+    At the 25MB per-attachment ceiling that is ~15GB/hour of uploads against a
+    ~1.5GB/hour target, which is precisely the disk-exhaustion case this class
+    exists to stop.
+    """
+
     rate = '60/hour'
-    rate_setting = 'user'
+    # Its own scope. Sharing 'user' cannot work: _RateFromSettings resolves
+    # `rate` from settings whenever rate_setting is set, and the declared
+    # default is only a fallback for when the scope is missing.
+    rate_setting = 'campaign_create'
 
 
 class StatusPollThrottle(_RateFromSettings, UserRateThrottle):

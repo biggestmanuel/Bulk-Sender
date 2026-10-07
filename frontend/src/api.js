@@ -88,11 +88,29 @@ function messageFor(status, body, fallback) {
   return fallback
 }
 
-async function request(path, { method = 'GET', body, headers = {}, auth = true } = {}) {
+/**
+ * Default request timeout.
+ *
+ * fetch() has no timeout of its own, so a request to a backend that accepts the
+ * connection and then never answers stays pending forever. The polling loop
+ * survives that (its gap guard prevents overlap), but the progress panel just
+ * quietly stops updating with no error anywhere, which reads as "the send
+ * finished" when it has not.
+ */
+const DEFAULT_TIMEOUT_MS = 30000
+
+async function request(
+  path,
+  { method = 'GET', body, headers = {}, auth = true, timeout = DEFAULT_TIMEOUT_MS } = {}
+) {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), timeout)
+
   let response
   try {
     response = await fetch(`${BASE_URL}${path}`, {
       method,
+      signal: controller.signal,
       headers: {
         ...(body instanceof FormData ? {} : { 'Content-Type': 'application/json' }),
         ...(auth ? getAuthHeaders() : {}),
@@ -100,9 +118,19 @@ async function request(path, { method = 'GET', body, headers = {}, auth = true }
       },
       body: body instanceof FormData ? body : body ? JSON.stringify(body) : undefined,
     })
-  } catch {
+  } catch (err) {
+    // Distinguish "we gave up waiting" from "never reached the server"; they
+    // need different advice and the browser reports both as a bare TypeError.
+    if (err?.name === 'AbortError') {
+      throw new ApiError(
+        `The server did not respond within ${Math.round(timeout / 1000)}s. It may be busy or unreachable.`,
+        { status: 0, code: 'timeout' }
+      )
+    }
     // Network-level failure: offline, DNS, connection refused, CORS preflight.
     throw new ApiError(messageFor(0, null, 'Request failed'), { status: 0 })
+  } finally {
+    clearTimeout(timer)
   }
 
   const parsed = await readBody(response)
@@ -196,7 +224,13 @@ export async function createCampaign({ name, messageText, sendMode, contacts, me
   ;(mediaFiles || []).forEach((file) => formData.append('media_files', file))
 
   try {
-    return await request('/campaigns/create/', { method: 'POST', body: formData })
+    // Longer than the default: this is the one call that ships file bytes, so
+    // the 30s budget would abort a legitimate upload on a slow connection.
+    return await request('/campaigns/create/', {
+      method: 'POST',
+      body: formData,
+      timeout: 120000,
+    })
   } catch (err) {
     if (err.code === 'invalid_contacts' && err.detail?.rejected) {
       err.invalidContacts = err.detail.rejected
@@ -224,7 +258,31 @@ export function resetWhatsappSession() {
   return request('/whatsapp-session/reset/', { method: 'POST' })
 }
 
-/** Authenticated URL for a campaign attachment. */
-export function mediaUrl(campaignId, fileId) {
-  return `${BASE_URL}/campaigns/${campaignId}/media/${fileId}/`
+/**
+ * Fetches one campaign attachment as a Blob.
+ *
+ * Deliberately not a bare URL helper. The media endpoint is authenticated by
+ * the same Token header as everything else, so a URL dropped into an <img src>
+ * or an <a download> would 401 — the browser sends cookies, not an
+ * Authorization header. Fetching the bytes here and handing back a blob is the
+ * only thing that actually works.
+ *
+ * The caller owns the returned object URL and must revokeObjectURL it.
+ */
+export async function fetchCampaignMedia(campaignId, fileId) {
+  const response = await fetch(
+    `${BASE_URL}/campaigns/${campaignId}/media/${fileId}/`,
+    { headers: getAuthHeaders() }
+  )
+
+  if (!response.ok) {
+    const parsed = await readBody(response).catch(() => null)
+    throw new ApiError(messageFor(response.status, parsed, 'Could not load the attachment'), {
+      status: response.status,
+      code: parsed?.code ?? null,
+      detail: parsed,
+    })
+  }
+
+  return response.blob()
 }

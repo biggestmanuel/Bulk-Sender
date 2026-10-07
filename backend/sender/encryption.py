@@ -20,17 +20,32 @@ settings.CRYPTOGRAPHY_KEYS is an ordered list, newest key first:
   * writes always use CRYPTOGRAPHY_KEYS[0]
   * reads try every key in turn until one decrypts
 
-So rotating is: prepend a new key to the environment variable, let the app
-re-save rows (or run the rekey management command), then drop the old key
-from the end. There is no window where existing data becomes unreadable,
-which is what you get from a single-key scheme where rotating means either
-a migration window or permanent data loss.
+So rotating is: prepend a new key to the environment variable, run
+`manage.py rekey_contacts` to migrate the rows, then drop the old key from
+the end. There is no window where existing data becomes unreadable, which is
+what you get from a single-key scheme where rotating means either a migration
+window or permanent data loss.
+
+The middle step is not optional. Rows are only re-encrypted when something
+explicitly saves them, so prepending a key migrates nothing on its own and
+dropping the old key too early makes every un-migrated row permanently
+unreadable.
 """
 
 from cryptography.fernet import Fernet, InvalidToken
 from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import models
+
+# Fernet objects are immutable and stateless once built, so they can be reused.
+# Without this, _get_fernets() constructed one per configured key on every
+# single field read — from_db_value runs per row, so a campaign list paid for
+# N_rows x N_keys constructions it did not need to.
+#
+# Keyed on the configured keys themselves so that tests which reload settings
+# with different CRYPTOGRAPHY_KEYS get the right ciphers rather than a stale
+# one, and so rotating the env var takes effect without a restart.
+_fernet_cache = {}
 
 
 def _get_fernets():
@@ -52,6 +67,11 @@ def _get_fernets():
             'environment variable before using encrypted fields.'
         )
 
+    cache_key = tuple(keys)
+    cached = _fernet_cache.get(cache_key)
+    if cached is not None:
+        return cached
+
     fernets = []
     for key in keys:
         if isinstance(key, str):
@@ -64,6 +84,8 @@ def _get_fernets():
                 'Generate one with: python -c "from cryptography.fernet import Fernet; '
                 'print(Fernet.generate_key().decode())"'
             ) from exc
+
+    _fernet_cache[cache_key] = fernets
     return fernets
 
 

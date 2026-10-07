@@ -270,6 +270,11 @@ REST_FRAMEWORK = {
         'register': env_list('THROTTLE_REGISTER', default=['5/hour'])[0],
         'send_start': env_list('THROTTLE_SEND_START', default=['30/hour'])[0],
         'send_quota': env_list('THROTTLE_SEND_QUOTA', default=['20000/day'])[0],
+        # Own scope rather than sharing 'user': campaign creation accepts file
+        # uploads, so it needs a budget independent of ordinary API traffic.
+        # Sharing a scope makes the throttle class's declared rate dead — see
+        # sender/throttles.py.
+        'campaign_create': env_list('THROTTLE_CAMPAIGN_CREATE', default=['60/hour'])[0],
     },
     # Unused by design: the sender app has no browseable HTML/API-root needs,
     # and leaving it on made every 404 fall back to an HTML error page that
