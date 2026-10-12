@@ -15,6 +15,11 @@ from unittest import mock
 from django.core.exceptions import ImproperlyConfigured
 from django.test import SimpleTestCase
 
+# Mirrors settings.DEV_CRYPTOGRAPHY_KEY. Duplicated rather than imported so the
+# test states the expected key material outright; if the committed key ever
+# changes, this fails loudly instead of silently following it.
+DEV_CRYPTOGRAPHY_KEY = 'zH8f3sVv0kR5cQ2mB9pT1wL6xY4nJ7eD8uG3aF5oI2s='
+
 
 class EnvBoolTests(SimpleTestCase):
     def reload(self, **env):
@@ -177,10 +182,16 @@ class DevEncryptionKeyWarningTests(SimpleTestCase):
         importlib.reload(sys.modules['config.settings'])
 
     def test_warns_when_the_committed_key_is_the_live_one(self):
+        # CRYPTOGRAPHY_KEYS is set explicitly rather than left unset. load_dotenv
+        # runs inside settings.py, so a developer who has a backend/.env would
+        # otherwise have it loaded into this supposedly-empty environment — and
+        # the test would pass or fail depending on whether a file happens to
+        # exist on the machine.
         with self.assertLogs('config.settings', level='WARNING') as captured:
             with mock.patch.dict('os.environ', {
                 'DEBUG': 'true',
                 'SECRET_KEY': 'x',
+                'CRYPTOGRAPHY_KEYS': DEV_CRYPTOGRAPHY_KEY,
             }, clear=True):
                 importlib.reload(sys.modules['config.settings'])
 
@@ -205,11 +216,54 @@ class DevEncryptionKeyWarningTests(SimpleTestCase):
         with mock.patch.dict('os.environ', {
             'DEBUG': 'true',
             'SECRET_KEY': 'x',
+            'CRYPTOGRAPHY_KEYS': DEV_CRYPTOGRAPHY_KEY,
         }, clear=True):
             reloaded = importlib.reload(sys.modules['config.settings'])
 
         self.assertTrue(reloaded.DEBUG)
-        self.assertEqual(len(reloaded.CRYPTOGRAPHY_KEYS), 1)
+        # At least one usable key, not exactly one: backend/.env legitimately
+        # supplies several during a rotation, and the point of this test is that
+        # the warning is not fatal.
+        self.assertGreaterEqual(len(reloaded.CRYPTOGRAPHY_KEYS), 1)
+
+    def test_dev_key_present_only_for_reads_warns_less_loudly(self):
+        """
+        Mid-rotation state: the old key is deliberately kept so pre-rotation
+        rows still read, while writes already go to the new key.
+
+        The critical banner says "anything stored now is readable by anyone",
+        which is simply untrue here. Emitting it anyway trains people to ignore
+        it, which is how a real exposure gets missed — found by running the
+        documented rotation and watching it fire.
+        """
+        from cryptography.fernet import Fernet
+
+        real = Fernet.generate_key().decode()
+        with self.assertLogs('config.settings', level='WARNING') as captured:
+            with mock.patch.dict('os.environ', {
+                'DEBUG': 'true',
+                'SECRET_KEY': 'x',
+                'CRYPTOGRAPHY_KEYS': f'{real},{DEV_CRYPTOGRAPHY_KEY}',
+            }, clear=True):
+                reloaded = importlib.reload(sys.modules['config.settings'])
+
+        message = '\n'.join(captured.output)
+        self.assertNotIn('ENCRYPTING WITH THE COMMITTED', message)
+        self.assertIn('rekey_contacts', message)
+        self.assertEqual(reloaded.CRYPTOGRAPHY_KEYS[0].decode(), real)
+
+    def test_dev_key_as_primary_still_warns_critically(self):
+        with self.assertLogs('config.settings', level='WARNING') as captured:
+            with mock.patch.dict('os.environ', {
+                'DEBUG': 'true',
+                'SECRET_KEY': 'x',
+                'CRYPTOGRAPHY_KEYS': DEV_CRYPTOGRAPHY_KEY,
+            }, clear=True):
+                importlib.reload(sys.modules['config.settings'])
+
+        self.assertIn(
+            'ENCRYPTING WITH THE COMMITTED', '\n'.join(captured.output)
+        )
 
 
 class StrictnessDoesNotBreakProductionConfig(SimpleTestCase):

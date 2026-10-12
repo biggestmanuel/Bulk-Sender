@@ -417,7 +417,7 @@ LOGGING = {
 }
 
 
-# --- Loud warning when the committed development key is the live one -------
+# --- Warning when the committed development key is in play -----------------
 # Emitted here, after LOGGING is configured, so it actually reaches the console
 # rather than being swallowed by Django's default (empty) logging setup.
 #
@@ -431,8 +431,18 @@ LOGGING = {
 # a key that is public in this repository's history) was the one it did not
 # cover. It is not worth refusing outright, because "a fresh clone runs with no
 # setup" is a real convenience the README sells. But it must not be silent.
+#
+# Two severities, because "is in the list" and "is what we write with" are
+# different questions. During a rotation the old key is deliberately kept for
+# reads while `manage.py rekey_contacts` migrates rows, and a banner saying
+# "anything stored now is readable by anyone" is simply untrue at that point —
+# writes already go to the new key. A warning that cries wolf on its own
+# recommended procedure trains people to ignore it, which is how a real exposure
+# gets missed. Found by running the documented rotation and seeing it fire.
 
-if DEV_CRYPTOGRAPHY_KEY.encode() in CRYPTOGRAPHY_KEYS:
+_DEV_KEY = DEV_CRYPTOGRAPHY_KEY.encode()
+
+if _DEV_KEY == CRYPTOGRAPHY_KEYS[0]:
     logging.getLogger('config.settings').warning(
         '\n'
         '  ############################################################\n'
@@ -448,4 +458,14 @@ if DEV_CRYPTOGRAPHY_KEY.encode() in CRYPTOGRAPHY_KEYS:
         '  #  python -c "from cryptography.fernet import Fernet; \\\n'
         '  #    print(Fernet.generate_key().decode())"               #\n'
         '  ############################################################'
+    )
+
+elif _DEV_KEY in CRYPTOGRAPHY_KEYS:
+    # Reads only. Nothing new is being written under the public key.
+    logging.getLogger('config.settings').warning(
+        'The committed DEVELOPMENT encryption key is still listed in '
+        'CRYPTOGRAPHY_KEYS (not the primary). New data is encrypted with the '
+        'primary key, so nothing written now is exposed — but rows that predate '
+        'the rotation are still readable with the public key. Finish the '
+        'rotation with: python manage.py rekey_contacts'
     )
